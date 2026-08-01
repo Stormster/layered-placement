@@ -16,6 +16,7 @@ local function hookCursor()
     local _isValid = ISMoveableCursor.isValid
     local _render = ISMoveableCursor.render
     local _beforeWorldRender = ISMoveableCursor.beforeWorldRender
+    local _create = ISMoveableCursor.create
 
     function ISMoveableCursor:isValid(square)
         if not (LayeredPlacement.allowMeshFloorAim() and ISMoveableCursor.mode[self.player] == "place" and square) then
@@ -23,12 +24,14 @@ local function hookCursor()
         end
 
         -- Populate currentMoveProps from the clicked square first, then remap Z.
+        -- Re-project mouse onto the player's floor so mesh fallthrough uses the
+        -- catwalk XY you're looking at, not the ground tile the ray hit.
         local ok = _isValid(self, square)
         local props = self.currentMoveProps or self.origMoveProps
-        local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props)
+        local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props, self.player)
         if target and target ~= square then
             ok = _isValid(self, target)
-            -- create() uses currentSquare; keep both in sync with the remapped floor.
+            -- create() / DoTileBuilding use square + currentSquare; keep both remapped.
             self.square = target
             self.currentSquare = target
         end
@@ -54,8 +57,27 @@ local function hookCursor()
         end
     end
 
+    if _create then
+        function ISMoveableCursor:create(x, y, z, north, sprite)
+            local cs = self.currentSquare
+            if cs then
+                return _create(self, cs:getX(), cs:getY(), cs:getZ(), north, sprite)
+            end
+            return _create(self, x, y, z, north, sprite)
+        end
+    end
+
     LayeredPlacement.log("cursor floating Z hook ready")
 end
 
 Events.OnGameBoot.Add(hookCursor)
 Events.OnGameStart.Add(hookCursor)
+-- MP clients sometimes finish loading BuildingObjects after OnGameStart.
+Events.OnCreatePlayer.Add(function()
+    hookCursor()
+end)
+Events.OnTick.Add(function()
+    if not hooked then
+        hookCursor()
+    end
+end)

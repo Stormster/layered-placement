@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.4.5"
+LayeredPlacement.VERSION = "1.4.6"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -101,22 +101,25 @@ function LayeredPlacement.hasPlaceRequirements(props, character)
     return hasSkill and hasTool
 end
 
---- High/low decor can float (brush-like). If the mouse fell through to a lower Z
---- while you're upstairs, prefer the square at your floor for that XY.
-function LayeredPlacement.resolveFloatingSquare(character, square, props)
+--- If the mouse fell through mesh to a lower Z while you're upstairs, aim at
+--- your floor instead. Re-project the mouse onto the player Z plane — lifting
+--- the ground tile's XY is wrong under isometric angles (common on catwalks).
+function LayeredPlacement.resolveFloatingSquare(character, square, props, playerNum)
     if not LayeredPlacement.allowMeshFloorAim() then
         return square
     end
-    if not square or not props then
+    if not square then
         return square
     end
-    if not (props.isHigh or props.isLow) then
+    -- High/low decor is the usual mesh case; also remap when props aren't ready yet
+    -- so the cursor can still snap before inventory props populate.
+    if props and not (props.isHigh or props.isLow) then
         return square
     end
     if not character then
         return square
     end
-    local charSq = character:getSquare()
+    local charSq = character:getSquare() or character:getCurrentSquare()
     if not charSq then
         return square
     end
@@ -128,13 +131,40 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props)
     if not cell then
         return square
     end
+
     local x, y = square:getX(), square:getY()
+    -- Re-hit the mouse against the player's floor (fixes angled look-through).
+    if screenToIsoX and screenToIsoY and getMouseX and getMouseY then
+        local pn = playerNum
+        if pn == nil and character.getPlayerNum then
+            pn = character:getPlayerNum()
+        end
+        if pn ~= nil then
+            local wx = screenToIsoX(pn, getMouseX(), getMouseY(), pz)
+            local wy = screenToIsoY(pn, getMouseX(), getMouseY(), pz)
+            if wx and wy then
+                x = math.floor(wx)
+                y = math.floor(wy)
+            end
+        end
+    end
+
     local atPlayer = cell:getGridSquare(x, y, pz)
     if not atPlayer and getWorld and getWorld():isValidSquare(x, y, pz) then
-        atPlayer = cell:createNewGridSquare(x, y, pz, true)
+        -- SP is fine creating missing upstairs squares; MP clients often can't.
+        local ok, created = pcall(function()
+            return cell:createNewGridSquare(x, y, pz, true)
+        end)
+        if ok then
+            atPlayer = created
+        end
     end
     if atPlayer then
-        LayeredPlacement.log("float Z " .. tostring(square:getZ()) .. " -> " .. tostring(pz))
+        LayeredPlacement.log(
+            "float Z " .. tostring(square:getZ())
+                .. " -> " .. tostring(pz)
+                .. " @" .. tostring(x) .. "," .. tostring(y)
+        )
         return atPlayer
     end
     return square
