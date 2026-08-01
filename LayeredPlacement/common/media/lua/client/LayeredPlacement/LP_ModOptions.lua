@@ -39,7 +39,7 @@ local function applyFromUiValues()
     for _, def in ipairs(OPTIONS) do
         local opt = opts:getOption(def.id)
         if opt and opt.getValue then
-            LayeredPlacement.setOption(def.id, opt:getValue() == true)
+            LayeredPlacement.setOption(def.id, LayeredPlacement.coerceBool(opt:getValue(), true))
         end
     end
     LayeredPlacement.log(
@@ -65,13 +65,13 @@ local function bindOptionCallbacks(opts)
         if opt then
             -- Fires when the box is clicked (before Apply). Instant runtime update.
             opt.onChange = function(self, selected)
-                LayeredPlacement.setOption(optionId, selected == true)
-                LayeredPlacement.log(optionId .. "=" .. tostring(selected == true) .. " (pending save)")
+                LayeredPlacement.setOption(optionId, LayeredPlacement.coerceBool(selected, true))
+                LayeredPlacement.log(optionId .. "=" .. tostring(LayeredPlacement.options[optionId]) .. " (pending save)")
             end
             -- Fires on Apply if the value changed vs the previous saved value.
             opt.onChangeApply = function(self, selected)
-                LayeredPlacement.setOption(optionId, selected == true)
-                LayeredPlacement.log(optionId .. "=" .. tostring(selected == true) .. " (apply)")
+                LayeredPlacement.setOption(optionId, LayeredPlacement.coerceBool(selected, true))
+                LayeredPlacement.log(optionId .. "=" .. tostring(LayeredPlacement.options[optionId]) .. " (apply)")
             end
         end
     end

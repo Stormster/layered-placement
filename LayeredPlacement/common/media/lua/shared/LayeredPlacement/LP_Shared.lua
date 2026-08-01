@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.4.1"
+LayeredPlacement.VERSION = "1.4.2"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -60,9 +60,26 @@ function LayeredPlacement.isEnabled()
         or LayeredPlacement.allowLightInteract()
 end
 
+--- Coerce Mod Options / UI values to a real boolean.
+function LayeredPlacement.coerceBool(value, default)
+    if value == nil then
+        return default ~= false
+    end
+    if value == true or value == false then
+        return value
+    end
+    if value == "true" or value == "1" then
+        return true
+    end
+    if value == "false" or value == "0" then
+        return false
+    end
+    return value and true or false
+end
+
 function LayeredPlacement.setOption(name, value)
     LayeredPlacement.options = LayeredPlacement.options or {}
-    LayeredPlacement.options[name] = value and true or false
+    LayeredPlacement.options[name] = LayeredPlacement.coerceBool(value, true)
 end
 
 function LayeredPlacement.setEnabled(value)
