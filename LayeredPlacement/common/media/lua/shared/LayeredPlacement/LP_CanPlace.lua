@@ -1,5 +1,6 @@
 require "LayeredPlacement/LP_Shared"
 require "Moveables/ISMoveableSpriteProps"
+require "Moveables/ISMoveablesAction"
 
 --- Decor / layer items we treat more like brush placement.
 local function isLayerDecor(props)
@@ -175,8 +176,24 @@ function ISMoveableSpriteProps:isWallBetweenParts(spriteGrid, x, y, z)
     return _isWallBetweenParts(self, spriteGrid, x, y, z)
 end
 
+--- Same-floor Chebyshev reach used by walkToAndEquip + timed-action isValid.
+--- Must stay in sync: starting Place without matching isValid just spins then cancels.
+local REACH_DIST = 2
+
+local function withinCatwalkReach(character, square)
+    local charSquare = character and character:getSquare()
+    if not charSquare or not square then
+        return false
+    end
+    -- ISMoveablesAction:isValid requires the same Z.
+    if charSquare:getZ() ~= square:getZ() then
+        return false
+    end
+    return chebyshevDist(charSquare, square) <= REACH_DIST
+end
+
 --- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
---- if the player is already next to the tile (same rules as light interact).
+--- if the player is already next to the tile.
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
     local ok = _walkToAndEquip(self, character, square, mode, origSpriteName)
     if ok or not LayeredPlacement.allowCatwalkReach() then
@@ -185,39 +202,37 @@ function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSprit
     if (mode ~= "place" and mode ~= "pickup") or not isLayerDecor(self) or not character or not square then
         return ok
     end
-    local charSquare = character:getSquare()
-    if not charSquare then
-        return false
-    end
-    if math.abs(charSquare:getZ() - square:getZ()) > 1 then
-        return false
-    end
-    if chebyshevDist(charSquare, square) > 2 then
+    if not withinCatwalkReach(character, square) then
         return false
     end
     return tryEquipModeTool(self, character, mode)
 end
 
-local function findObjectBySprite(square, spriteName)
-    if not square or not spriteName then
-        return nil
+--- walkToAndEquip can start the action via catwalkReach, but vanilla isValid still
+--- demands isAdjacentTo (dist 1). Extend adjacency so the action can finish.
+local _isAdjacentToAnySquare = ISMoveablesAction.isAdjacentToAnySquare
+
+function ISMoveablesAction:isAdjacentToAnySquare()
+    if _isAdjacentToAnySquare(self) then
+        return true
     end
-    local objects = square:getObjects()
-    if not objects then
-        return nil
+    if not LayeredPlacement.allowCatwalkReach() then
+        return false
     end
-    for i = objects:size() - 1, 0, -1 do
-        local obj = objects:get(i)
-        local spr = obj:getSprite()
-        if spr and spr:getName() == spriteName then
-            return obj
-        end
+    if self.mode ~= "place" and self.mode ~= "pickup" then
+        return false
     end
-    return nil
+    local props = self.moveProps
+    if not props or not isLayerDecor(props) then
+        return false
+    end
+    return withinCatwalkReach(self.character, self.square)
 end
 
 local _placeMoveableInternal = ISMoveableSpriteProps.placeMoveableInternal
 
+--- Floating wall lamps on railings: place a real networked object (createTile does not
+--- sync properly in multiplayer, which looks like the Place spinner finishing with nothing).
 function ISMoveableSpriteProps:placeMoveableInternal(square, item, spriteName)
     if LayeredPlacement.allowFloatingPlace()
         and self.type == "WallObject"
@@ -227,23 +242,30 @@ function ISMoveableSpriteProps:placeMoveableInternal(square, item, spriteName)
     then
         local hasWall = self.facing and self:getWallForFacing(square, self.facing)
         if not hasWall then
-            createTile(spriteName, square)
-            local obj = findObjectBySprite(square, spriteName)
-            if obj and instanceof(obj, "IsoLightSwitch") then
+            local spr = getSprite(spriteName)
+            local obj
+            if spr and spr:getType() == IsoObjectType.lightswitch then
+                obj = IsoLightSwitch.new(getCell(), square, spr, square:getRoomID())
                 obj:addLightSourceFromSprite()
                 if item then
                     obj:getCustomSettingsFromItem(item)
                 end
+            else
+                obj = IsoObject.new(getCell(), square, spriteName)
             end
-            square:RecalcProperties()
-            square:RecalcAllWithNeighbours(true)
-            IsoGenerator.updateGenerator(square)
             if obj then
+                square:AddSpecialObject(obj)
+                if isServer() then
+                    obj:transmitCompleteItemToClients()
+                end
+                square:RecalcProperties()
+                square:RecalcAllWithNeighbours(true)
+                IsoGenerator.updateGenerator(square)
                 triggerEvent("OnObjectAdded", obj)
+                triggerEvent("OnContainerUpdate")
+                LayeredPlacement.log("floating WallObject " .. tostring(spriteName))
+                return obj
             end
-            triggerEvent("OnContainerUpdate")
-            LayeredPlacement.log("brush-tile floating WallObject " .. tostring(spriteName))
-            return obj
         end
     end
     return _placeMoveableInternal(self, square, item, spriteName)
