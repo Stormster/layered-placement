@@ -32,9 +32,9 @@ Use normal [b]Move Furniture → Place[/b] for lights, posters, and other wall/c
 With Mod Manager, use the [b]Mod Options[/b] screen (Esc → Options → Mods is often empty).
 
 [h2]Multiplayer[/h2]
-Install on the [b]server and all clients[/b].
+[b]Very work in progress.[/b] Install on the [b]server and all clients[/b], but expect breakage.
 
-Placement rules run with the mod on the server. Mesh aiming and light-click helpers are per-client (each player’s Mod Options). On a dedicated server, place helpers stay available as long as the mod is loaded there.
+Some features may not work at all in MP yet (especially mesh-floor aiming, catwalk reach, and railing light controls). Placement helpers depend on the server having the mod loaded; client-only features follow each player’s Mod Options and may desync or fail on dedicated servers.
 
 [h2]Requirements[/h2]
 Build 42.20+. Safe to add mid-save.
