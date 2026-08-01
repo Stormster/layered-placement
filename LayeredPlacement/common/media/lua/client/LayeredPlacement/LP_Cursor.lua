@@ -75,6 +75,10 @@ local function hookCursor()
     end
     hooked = true
 
+    -- Vanilla draws this cyan circle at the raw mouse Z (often ground under a pillar).
+    -- Our remapped FloorTileCursor is the real aim indicator.
+    ISMoveableCursor.renderFloorHelper = false
+
     local _isValid = ISMoveableCursor.isValid
     local _render = ISMoveableCursor.render
     local _beforeWorldRender = ISMoveableCursor.beforeWorldRender
@@ -91,7 +95,7 @@ local function hookCursor()
         -- Pickup: remap BEFORE isValid so getObjectList sees objects on your floor,
         -- not the ground tile the mouse fell through to.
         if mode == "pickup" then
-            local target = LayeredPlacement.resolveFloatingSquare(self.character, square, nil, self.player)
+            local target = LayeredPlacement.resolveFloatingSquare(self.character, square, nil, self.player, "pickup")
             if target and target ~= square then
                 self.square = target
                 self.currentSquare = target
@@ -105,7 +109,7 @@ local function hookCursor()
         -- catwalk XY you're looking at, not the ground tile the ray hit.
         local ok = _isValid(self, square)
         local props = self.currentMoveProps or self.origMoveProps
-        local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props, self.player)
+        local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props, self.player, "place")
         if target and target ~= square then
             ok = _isValid(self, target)
             -- create() / DoTileBuilding use square + currentSquare; keep both remapped.
@@ -117,6 +121,8 @@ local function hookCursor()
 
     if _render then
         function ISMoveableCursor:render(x, y, z, square)
+            -- Per-instance flag; class default may still be true on fresh cursors.
+            self.renderFloorHelper = false
             local cs = aimSquare(self)
             if cs and (cs:getX() ~= x or cs:getY() ~= y or cs:getZ() ~= z) then
                 x, y, z, square = cs:getX(), cs:getY(), cs:getZ(), cs

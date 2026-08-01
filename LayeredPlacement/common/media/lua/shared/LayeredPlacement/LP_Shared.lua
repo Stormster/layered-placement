@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.4.8"
+LayeredPlacement.VERSION = "1.4.9"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -101,10 +101,135 @@ function LayeredPlacement.hasPlaceRequirements(props, character)
     return hasSkill and hasTool
 end
 
+--- Score a square for pickup aiming (prefer high/low decor already on the tile).
+local function pickupAimScore(square)
+    if not square or not square.getObjects then
+        return -1
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return 0
+    end
+    local score = 0
+    for i = 0, objects:size() - 1 do
+        local obj = objects:get(i)
+        local spr = obj and obj:getSprite()
+        local props = spr and spr:getProperties()
+        if props and props:has("IsMoveAble") then
+            score = score + 1
+            if props:has("IsHigh") or props:has("IsLow") then
+                score = score + 4
+            end
+        end
+        -- Wall-overlay moveables live as child sprites on walls/railings.
+        if obj and obj.getChildSprites then
+            local kids = obj:getChildSprites()
+            if kids then
+                for j = 0, kids:size() - 1 do
+                    local child = kids:get(j)
+                    local cspr = child and child:getParentSprite()
+                    local cprops = cspr and cspr:getProperties()
+                    if cprops and cprops:has("IsMoveAble") then
+                        score = score + 1
+                        if cprops:has("IsHigh") or cprops:has("IsLow") then
+                            score = score + 4
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return score
+end
+
+--- Score a square for place aiming (prefer real floors / catwalk tiles over pillar air).
+local function placeAimScore(square)
+    if not square then
+        return -1
+    end
+    local score = 1
+    if square:getFloor() then
+        score = score + 4
+    end
+    if IsoFlagType and square:has(IsoFlagType.solidfloor) then
+        score = score + 2
+    end
+    return score
+end
+
+local function getOrCreateSquare(cell, x, y, z)
+    local sq = cell:getGridSquare(x, y, z)
+    if sq then
+        return sq
+    end
+    if getWorld and getWorld():isValidSquare(x, y, z) then
+        local ok, created = pcall(function()
+            return cell:createNewGridSquare(x, y, z, true)
+        end)
+        if ok then
+            return created
+        end
+    end
+    return nil
+end
+
+--- When the mouse hits a tall pillar/ground, the reprojected XY may be empty or
+--- a bad column tile. Search nearby player-Z squares for a better aim target.
+local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
+    local best, bestScore, bestDist = nil, -1, 999
+    local radius = (mode == "pickup") and 2 or 2
+    for dx = -radius, radius do
+        for dy = -radius, radius do
+            local dist = math.max(math.abs(dx), math.abs(dy))
+            local sq
+            if dist == 0 then
+                sq = getOrCreateSquare(cell, x, y, pz)
+            else
+                sq = cell:getGridSquare(x + dx, y + dy, pz)
+            end
+            if sq then
+                local score
+                if mode == "pickup" then
+                    score = pickupAimScore(sq)
+                else
+                    score = placeAimScore(sq)
+                end
+                if score > bestScore or (score == bestScore and dist < bestDist) then
+                    best, bestScore, bestDist = sq, score, dist
+                end
+            end
+        end
+    end
+    -- Pickup with nothing nearby: still snap to exact/nearest existing upstairs tile
+    -- so we don't leave the cursor on the ground under a pillar.
+    if mode == "pickup" and bestScore <= 0 then
+        local exact = getOrCreateSquare(cell, x, y, pz)
+        if exact then
+            return exact
+        end
+        for r = 1, radius do
+            for dx = -r, r do
+                for dy = -r, r do
+                    if math.abs(dx) == r or math.abs(dy) == r then
+                        local sq = cell:getGridSquare(x + dx, y + dy, pz)
+                        if sq then
+                            return sq
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
 --- If the mouse fell through mesh to a lower Z while you're upstairs, aim at
 --- your floor instead. Re-project the mouse onto the player Z plane — lifting
 --- the ground tile's XY is wrong under isometric angles (common on catwalks).
-function LayeredPlacement.resolveFloatingSquare(character, square, props, playerNum)
+--- Near tall pillars the exact XY often has no upper square; snap to a nearby
+--- player-Z tile (decor for pickup, floors for place).
+--- mode: optional "pickup" / "place" (nil defaults to place-style scoring)
+function LayeredPlacement.resolveFloatingSquare(character, square, props, playerNum, mode)
     if not LayeredPlacement.allowMeshFloorAim() then
         return square
     end
@@ -149,21 +274,14 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
         end
     end
 
-    local atPlayer = cell:getGridSquare(x, y, pz)
-    if not atPlayer and getWorld and getWorld():isValidSquare(x, y, pz) then
-        -- SP is fine creating missing upstairs squares; MP clients often can't.
-        local ok, created = pcall(function()
-            return cell:createNewGridSquare(x, y, pz, true)
-        end)
-        if ok then
-            atPlayer = created
-        end
-    end
+    local aimMode = mode or "place"
+    local atPlayer = findBestSquareAtPlayerZ(cell, x, y, pz, aimMode)
     if atPlayer then
         LayeredPlacement.log(
             "float Z " .. tostring(square:getZ())
                 .. " -> " .. tostring(pz)
-                .. " @" .. tostring(x) .. "," .. tostring(y)
+                .. " @" .. tostring(atPlayer:getX()) .. "," .. tostring(atPlayer:getY())
+                .. " (" .. tostring(aimMode) .. ")"
         )
         return atPlayer
     end
