@@ -14,7 +14,7 @@ local OPTIONS = {
     {
         id = "meshFloorAim",
         label = "Aim at your floor through mesh",
-        tooltip = "When you're upstairs and the Place cursor falls through grated floors to the ground, aim at your floor instead.",
+        tooltip = "When you're upstairs and Place/Pickup falls through grated floors to the ground, aim at your floor instead.",
     },
     {
         id = "catwalkReach",

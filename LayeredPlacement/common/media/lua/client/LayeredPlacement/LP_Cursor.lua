@@ -19,11 +19,23 @@ local function hookCursor()
     local _create = ISMoveableCursor.create
 
     function ISMoveableCursor:isValid(square)
-        if not (LayeredPlacement.allowMeshFloorAim() and ISMoveableCursor.mode[self.player] == "place" and square) then
+        local mode = ISMoveableCursor.mode[self.player]
+        if not (LayeredPlacement.allowMeshFloorAim() and square and (mode == "place" or mode == "pickup")) then
             return _isValid(self, square)
         end
 
-        -- Populate currentMoveProps from the clicked square first, then remap Z.
+        -- Pickup: remap BEFORE isValid so getObjectList sees objects on your floor,
+        -- not the ground tile the mouse fell through to.
+        if mode == "pickup" then
+            local target = LayeredPlacement.resolveFloatingSquare(self.character, square, nil, self.player)
+            if target and target ~= square then
+                self.square = target
+                return _isValid(self, target)
+            end
+            return _isValid(self, square)
+        end
+
+        -- Place: populate currentMoveProps from the clicked square first, then remap Z.
         -- Re-project mouse onto the player's floor so mesh fallthrough uses the
         -- catwalk XY you're looking at, not the ground tile the ray hit.
         local ok = _isValid(self, square)
