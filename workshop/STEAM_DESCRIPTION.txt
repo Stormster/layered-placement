@@ -32,15 +32,15 @@ Use normal [b]Move Furniture → Place[/b] for lights, posters, and other wall/c
 With Mod Manager, use the [b]Mod Options[/b] screen (Esc → Options → Mods is often empty).
 
 [h2]Multiplayer[/h2]
-[b]Very work in progress.[/b] Install on the [b]server and all clients[/b], but expect breakage.
+Should work in multiplayer now. Install on the [b]server and all clients[/b].
 
-Some features may not work at all in MP yet (especially mesh-floor aiming, catwalk reach, and railing light controls). Placement helpers depend on the server having the mod loaded; client-only features follow each player’s Mod Options and may desync or fail on dedicated servers.
+Please report any MP issues (item name, where you were, and what failed). Mesh aiming and light-click helpers are still per-client (each player’s Mod Options).
 
 [h2]Requirements[/h2]
 Build 42.20+. Safe to add mid-save.
 
 [h2]Feedback[/h2]
-If something looks wrong or won’t toggle, note the item name and where you placed it.
+If something looks wrong or won’t toggle, note the item name and where you placed it — especially in multiplayer.
 
 Workshop ID: (set after upload)
 Mod ID: LayeredPlacement
