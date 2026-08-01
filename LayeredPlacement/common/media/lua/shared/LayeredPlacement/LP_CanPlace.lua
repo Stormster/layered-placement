@@ -45,6 +45,14 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
         return false
     end
 
+    local isHighLow = props.isHigh or props.isLow
+    if props.type == "WallOverlay" or props.type == "WindowObject" then
+        if not hasWallForDecor(props, square) then
+            return false
+        end
+        if not LayeredPlacement.allowLayeredPlace() then
+            return false
+        end
     elseif props.type == "WallObject" then
         if isHighLow then
             if not hasWallForDecor(props, square) then
