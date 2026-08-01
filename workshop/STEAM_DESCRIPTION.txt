@@ -1,46 +1,12 @@
-[h1]Layered Placement[/h1]
-Use normal [b]Move Furniture → Place[/b] for lights, posters, and other wall/ceiling decor — closer to what the admin brush can do, without full Place Anywhere.
+Decorate with Pickup/Place Furniture without using Brush Tool but the way the admin brush allows.
 
-[h2]What you can do[/h2]
-[list]
-[*] Put ceiling lights and string lights over tables, counters, posters, and other clutter
-[*] Stack more than one high decor item on the same tile
-[*] Keep wall decorations together (for example a light and a poster on the same wall)
-[*] Place hanging decor and outdoor/wall lamps on railings, posts, and catwalk edges
-[*] Turn railing lamps on and off more reliably (right-click / left-click without the rail stealing every click)
-[*] When you're upstairs on mesh floors and the cursor drops to the ground, Place aims at your floor instead
-[*] Finish Place and Pickup when you're already next to awkward catwalk tiles but pathing fails
-[/list]
+Hang lights over tables and posters, put lamps on railings and catwalks, and turn them on/off without the railing eating your clicks.
 
-[h2]What it does [b]not[/b] do[/h2]
-[list]
-[*] Not full Place Anywhere
-[*] Crates, tables, chairs, and other floor furniture still follow vanilla stacking
-[*] You still use the item from inventory and still need the usual skills / tools
-[/list]
+Separate Mod Options toggles for each feature. Crates/tables still stack normally. Skills and tools still matter.
 
-[h2]Options[/h2]
-[b]Mod Options → Layered Placement[/b] — separate toggles (all on by default):
-[list]
-[*] Lights over furniture & stacked decor
-[*] Place on railings & catwalks
-[*] Aim at your floor through mesh
-[*] Easier reach on catwalks
-[*] Easier railing light controls
-[/list]
+B42.20+. Safe mid-save. Multiplayer should work now, enable on server and all clients, and please report any issues.
 
-With Mod Manager, use the [b]Mod Options[/b] screen (Esc → Options → Mods is often empty).
+Do not reupload. Subscribe on Workshop for updates.
 
-[h2]Multiplayer[/h2]
-Should work in multiplayer now. Install on the [b]server and all clients[/b].
-
-Please report any MP issues (item name, where you were, and what failed). Mesh aiming and light-click helpers are still per-client (each player’s Mod Options).
-
-[h2]Requirements[/h2]
-Build 42.20+. Safe to add mid-save.
-
-[h2]Feedback[/h2]
-If something looks wrong or won’t toggle, note the item name and where you placed it — especially in multiplayer.
-
-Workshop ID: (set after upload)
+Workshop ID: 3775423228
 Mod ID: LayeredPlacement
