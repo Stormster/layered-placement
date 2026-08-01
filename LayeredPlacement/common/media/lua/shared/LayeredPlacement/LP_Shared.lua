@@ -1,14 +1,14 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.4.6"
+LayeredPlacement.VERSION = "1.4.7"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
 LayeredPlacement.options = LayeredPlacement.options or {
     layeredPlace = true,   -- lights over furniture/posters, multiple highs, wall decor together
     floatingPlace = true,  -- railings / catwalks / wall lamps without a solid wall
-    meshFloorAim = true,   -- Place aims at your floor when the mouse falls through mesh
+    meshFloorAim = true,   -- Place/Pickup aim at your floor when the mouse falls through mesh
     catwalkReach = true,   -- place/pickup when you're next to a tile but pathing fails
     lightInteract = true,  -- easier turn on/off and right-click for railing lamps
 }
