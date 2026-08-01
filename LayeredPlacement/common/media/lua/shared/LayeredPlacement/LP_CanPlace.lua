@@ -96,14 +96,15 @@ local function chebyshevDist(squareA, squareB)
     return dy
 end
 
-local function tryEquipPlaceTool(props, character)
+local function tryEquipModeTool(props, character, mode)
     if ISMoveableDefinitions.cheat or character:isMovablesCheat() then
         return true
     end
-    if not props.placeTool then
+    local usesTool = (mode == "pickup" and props.pickUpTool) or (mode == "place" and props.placeTool)
+    if not usesTool then
         return true
     end
-    local tool = props:hasTool(character, "place")
+    local tool = props:hasTool(character, mode)
     if not tool then
         return false
     end
@@ -174,15 +175,14 @@ function ISMoveableSpriteProps:isWallBetweenParts(spriteGrid, x, y, z)
     return _isWallBetweenParts(self, spriteGrid, x, y, z)
 end
 
+--- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
+--- if the player is already next to the tile (same rules as light interact).
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
     local ok = _walkToAndEquip(self, character, square, mode, origSpriteName)
     if ok or not LayeredPlacement.allowCatwalkReach() then
         return ok
     end
-    if mode ~= "place" or not isLayerDecor(self) or not character or not square then
-        return ok
-    end
-    if not LayeredPlacement.isPlaceHelpEnabled() then
+    if (mode ~= "place" and mode ~= "pickup") or not isLayerDecor(self) or not character or not square then
         return ok
     end
     local charSquare = character:getSquare()
@@ -195,7 +195,7 @@ function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSprit
     if chebyshevDist(charSquare, square) > 2 then
         return false
     end
-    return tryEquipPlaceTool(self, character)
+    return tryEquipModeTool(self, character, mode)
 end
 
 local function findObjectBySprite(square, spriteName)

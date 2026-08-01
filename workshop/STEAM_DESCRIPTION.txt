@@ -9,7 +9,7 @@ Use normal [b]Move Furniture → Place[/b] for lights, posters, and other wall/c
 [*] Place hanging decor and outdoor/wall lamps on railings, posts, and catwalk edges
 [*] Turn railing lamps on and off more reliably (right-click / left-click without the rail stealing every click)
 [*] When you're upstairs on mesh floors and the cursor drops to the ground, Place aims at your floor instead
-[*] Finish Place when you're already next to awkward catwalk tiles but pathing fails
+[*] Finish Place and Pickup when you're already next to awkward catwalk tiles but pathing fails
 [/list]
 
 [h2]What it does [b]not[/b] do[/h2]

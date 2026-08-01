@@ -19,7 +19,7 @@ local OPTIONS = {
     {
         id = "catwalkReach",
         label = "Easier reach on catwalks",
-        tooltip = "Let you finish Place when you're already next to a catwalk/railing tile but normal pathing to it fails.",
+        tooltip = "Let you finish Place and Pickup when you're already next to a catwalk/railing tile but normal pathing to it fails.",
     },
     {
         id = "lightInteract",
