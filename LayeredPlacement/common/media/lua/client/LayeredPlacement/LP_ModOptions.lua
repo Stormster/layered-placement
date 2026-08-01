@@ -28,25 +28,17 @@ local OPTIONS = {
     },
 }
 
-local options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
-local tickBoxes = {}
-
-for _, def in ipairs(OPTIONS) do
-    local box = options:addTickBox(def.id, def.label, true, def.tooltip)
-    tickBoxes[def.id] = box
-    box.onChange = function(self, selected)
-        LayeredPlacement.setOption(def.id, selected == true)
-        LayeredPlacement.log(def.id .. "=" .. tostring(selected == true) .. " (pending save)")
-    end
-end
-
-local function applyOptions()
-    if PZAPI.ModOptions and PZAPI.ModOptions.load then
-        PZAPI.ModOptions:load()
+--- Read current tickbox values into runtime flags.
+--- Do NOT call ModOptions:load() here — Apply already wrote UI values into option.value;
+--- load() would restore the previous file and undo the click.
+local function applyFromUiValues()
+    local opts = PZAPI.ModOptions:getOptions(LayeredPlacement.MOD_ID)
+    if not opts then
+        return
     end
     for _, def in ipairs(OPTIONS) do
-        local opt = options:getOption(def.id)
-        if opt then
+        local opt = opts:getOption(def.id)
+        if opt and opt.getValue then
             LayeredPlacement.setOption(def.id, opt:getValue() == true)
         end
     end
@@ -59,9 +51,46 @@ local function applyOptions()
     )
 end
 
-options.apply = function(self)
-    applyOptions()
+local function loadFromDiskThenApply()
+    if PZAPI.ModOptions and PZAPI.ModOptions.load then
+        PZAPI.ModOptions:load()
+    end
+    applyFromUiValues()
 end
 
-Events.OnMainMenuEnter.Add(applyOptions)
-Events.OnGameStart.Add(applyOptions)
+local function bindOptionCallbacks(opts)
+    for _, def in ipairs(OPTIONS) do
+        local optionId = def.id -- capture per-iteration (Lua 5.1 / Kahlua)
+        local opt = opts:getOption(optionId)
+        if opt then
+            -- Fires when the box is clicked (before Apply). Instant runtime update.
+            opt.onChange = function(self, selected)
+                LayeredPlacement.setOption(optionId, selected == true)
+                LayeredPlacement.log(optionId .. "=" .. tostring(selected == true) .. " (pending save)")
+            end
+            -- Fires on Apply if the value changed vs the previous saved value.
+            opt.onChangeApply = function(self, selected)
+                LayeredPlacement.setOption(optionId, selected == true)
+                LayeredPlacement.log(optionId .. "=" .. tostring(selected == true) .. " (apply)")
+            end
+        end
+    end
+
+    -- Called after all gameOption.apply() have copied UI → option.value.
+    opts.apply = function(self)
+        applyFromUiValues()
+    end
+end
+
+local options = PZAPI.ModOptions:getOptions(LayeredPlacement.MOD_ID)
+if not options then
+    options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
+    for _, def in ipairs(OPTIONS) do
+        options:addTickBox(def.id, def.label, true, def.tooltip)
+    end
+end
+
+bindOptionCallbacks(options)
+
+Events.OnMainMenuEnter.Add(loadFromDiskThenApply)
+Events.OnGameStart.Add(loadFromDiskThenApply)
