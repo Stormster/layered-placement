@@ -192,6 +192,20 @@ local function withinCatwalkReach(character, square)
     return chebyshevDist(charSquare, square) <= REACH_DIST
 end
 
+local function isCatwalkReachAction(action)
+    if not LayeredPlacement.allowCatwalkReach() then
+        return false
+    end
+    if not action or (action.mode ~= "place" and action.mode ~= "pickup") then
+        return false
+    end
+    local props = action.moveProps
+    if not props or not isLayerDecor(props) then
+        return false
+    end
+    return withinCatwalkReach(action.character, action.square)
+end
+
 --- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
 --- if the player is already next to the tile.
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
@@ -211,64 +225,34 @@ end
 --- walkToAndEquip can start the action via catwalkReach, but vanilla isValid still
 --- demands isAdjacentTo (dist 1). Extend adjacency so the action can finish.
 local _isAdjacentToAnySquare = ISMoveablesAction.isAdjacentToAnySquare
+local _isValidMoveablesAction = ISMoveablesAction.isValid
 
 function ISMoveablesAction:isAdjacentToAnySquare()
     if _isAdjacentToAnySquare(self) then
         return true
     end
-    if not LayeredPlacement.allowCatwalkReach() then
-        return false
-    end
-    if self.mode ~= "place" and self.mode ~= "pickup" then
-        return false
-    end
-    local props = self.moveProps
-    if not props or not isLayerDecor(props) then
-        return false
-    end
-    return withinCatwalkReach(self.character, self.square)
+    return isCatwalkReachAction(self)
 end
 
-local _placeMoveableInternal = ISMoveableSpriteProps.placeMoveableInternal
-
---- Floating wall lamps on railings: place a real networked object (createTile does not
---- sync properly in multiplayer, which looks like the Place spinner finishing with nothing).
-function ISMoveableSpriteProps:placeMoveableInternal(square, item, spriteName)
-    if LayeredPlacement.allowFloatingPlace()
-        and self.type == "WallObject"
-        and (self.isHigh or self.isLow)
-        and square
-        and spriteName
-    then
-        local hasWall = self.facing and self:getWallForFacing(square, self.facing)
-        if not hasWall then
-            local spr = getSprite(spriteName)
-            local obj
-            if spr and spr:getType() == IsoObjectType.lightswitch then
-                obj = IsoLightSwitch.new(getCell(), square, spr, square:getRoomID())
-                obj:addLightSourceFromSprite()
-                if item then
-                    obj:getCustomSettingsFromItem(item)
+--- Also short-circuit the full isValid path: same-Z + adjacency abort is what
+--- produces the Place spinner with no result on railing/catwalk tiles.
+function ISMoveablesAction:isValid()
+    if isCatwalkReachAction(self) then
+        if isClient() and SafeHouse.isSafeHouse(self.square, self.character:getUsername(), true) then
+            if self.mode == "place" or self.mode == "pickup" then
+                if not SafeHouse.isSafehouseAllowLoot(self.square, self.character) then
+                    self:stop()
+                    return false
                 end
-            else
-                obj = IsoObject.new(getCell(), square, spriteName)
-            end
-            if obj then
-                square:AddSpecialObject(obj)
-                if isServer() then
-                    obj:transmitCompleteItemToClients()
-                end
-                square:RecalcProperties()
-                square:RecalcAllWithNeighbours(true)
-                IsoGenerator.updateGenerator(square)
-                triggerEvent("OnObjectAdded", obj)
-                triggerEvent("OnContainerUpdate")
-                LayeredPlacement.log("floating WallObject " .. tostring(spriteName))
-                return obj
             end
         end
+        return true
     end
-    return _placeMoveableInternal(self, square, item, spriteName)
+    return _isValidMoveablesAction(self)
 end
+
+--- Let vanilla place WallObjects once canPlace is allowed. The old createTile /
+--- hand-rolled IsoLightSwitch path skipped TransferComponents and broke MP sync.
+--- (Streetlight createTile remains vanilla's problem only.)
 
 LayeredPlacement.log("place hooks ready (floating decor)")

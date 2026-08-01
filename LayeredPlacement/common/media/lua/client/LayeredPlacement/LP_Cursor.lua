@@ -22,13 +22,15 @@ local function hookCursor()
             return _isValid(self, square)
         end
 
+        -- Populate currentMoveProps from the clicked square first, then remap Z.
         local ok = _isValid(self, square)
-        -- Prefer current face props; fall back to inventory original (WallObject faces swap sprites).
         local props = self.currentMoveProps or self.origMoveProps
         local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props)
         if target and target ~= square then
             ok = _isValid(self, target)
+            -- create() uses currentSquare; keep both in sync with the remapped floor.
             self.square = target
+            self.currentSquare = target
         end
         return ok
     end
