@@ -1,0 +1,2 @@
+Poster: add a 256x256 (or larger) PNG named poster.png next to mod.info before Workshop upload.
+Workshop preview: optional preview.png in the workshop/ folder.

@@ -1,0 +1,14 @@
+version=1
+id=
+title=Layered Placement [B42]
+description=Decorate with Move Furniture Place the way the admin brush allows — without cheating in tiles.
+description=
+description=Hang lights over tables and posters, put lamps on railings and catwalks, and turn them on/off without the railing eating your clicks.
+description=
+description=Separate Mod Options toggles for each feature. Crates/tables still stack normally. Skills and tools still matter.
+description=
+description=B42.20+. Safe mid-save. Multiplayer: enable on server and all clients.
+description=
+description=Do not reupload. Subscribe on Workshop for updates.
+tags=Build 42;Furniture;QoL;Moveables;Placement;Decorating
+visibility=public
