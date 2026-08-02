@@ -146,11 +146,20 @@ local function ensureMultiSpriteSquares(props, square)
     end
 end
 
-local function isFloatingHighLow(props)
-    return LayeredPlacement.allowFloatingPlace()
-        and isLayerDecor(props)
-        and props
-        and (props.isHigh or props.isLow)
+--- Object-type highs/lows only (string lights, etc.). Wall hangings / overlays must
+--- stay on the vanilla attach path or flags/posters break.
+local function isFloatingObjectDecor(props)
+    if not LayeredPlacement.allowFloatingPlace() or not props or not props.isMoveable then
+        return false
+    end
+    if not (props.isHigh or props.isLow) then
+        return false
+    end
+    local t = props.type
+    if t == "WallObject" or t == "WallOverlay" or t == "WindowObject" then
+        return false
+    end
+    return t == "Object" or t == nil
 end
 
 local function findPlaceItem(props, character, origSpriteName)
@@ -397,8 +406,9 @@ local function cheatPickUpFloating(props, character, square, createItem)
 end
 
 --- Floating highs/lows: cheat them into place (no canPlace re-check).
+--- Wall hangings are excluded — they need vanilla wall-attach.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
-    if isFloatingHighLow(self) and square then
+    if isFloatingObjectDecor(self) and square then
         if cheatPlaceFloating(self, character, square, origSpriteName) then
             return
         end
@@ -410,8 +420,8 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
 end
 
 function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
-    -- Floating highs: treat like movables cheat for validation.
-    if isFloatingHighLow(self) and square and not square:has(IsoFlagType.water) and not square:has("tree") then
+    -- Object-type floating highs only — never skip wall checks for hangings/flags.
+    if isFloatingObjectDecor(self) and square and not square:has(IsoFlagType.water) and not square:has("tree") then
         return true
     end
     local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
@@ -422,21 +432,40 @@ function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item,
 end
 
 function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
-    if isFloatingHighLow(self) then
+    if isFloatingObjectDecor(self) then
         ensureMultiSpriteSquares(self, square)
         return true
     end
     if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
         ensureMultiSpriteSquares(self, square)
     end
-    return _canPickUpMoveable(self, character, square, object)
+    local ok = _canPickUpMoveable(self, character, square, object)
+    if ok or not LayeredPlacement.allowFloatingPlace() then
+        return ok
+    end
+    -- Wall/object highs on railings: allow pickup without full grid partners.
+    if not isLayerDecor(self) or not (self.isHigh or self.isLow) then
+        return ok
+    end
+    return self:canPickUpMoveableInternal(character, square, object, false)
 end
 
 function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, forceAllow)
-    if isFloatingHighLow(self) and square then
+    if isFloatingObjectDecor(self) and square then
         return cheatPickUpFloating(self, character, square, createItem)
     end
-    return _pickUpMoveable(self, character, square, createItem, forceAllow)
+    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
+        ensureMultiSpriteSquares(self, square)
+    end
+    local result = _pickUpMoveable(self, character, square, createItem, forceAllow)
+    if result ~= nil or not LayeredPlacement.allowFloatingPlace() then
+        return result
+    end
+    if not isLayerDecor(self) or not (self.isHigh or self.isLow) or not square then
+        return result
+    end
+    -- Grid partner missing: remove whatever parts we can find (wall/object highs).
+    return cheatPickUpFloating(self, character, square, createItem)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
@@ -448,8 +477,8 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         return false
     end
 
-    -- Floating highs/lows: green cursor if the grid cells can exist + item is held.
-    if isFloatingHighLow(self) then
+    -- Object-type floating highs/lows (string lights): green if grid + item OK.
+    if isFloatingObjectDecor(self) then
         if self.isMultiSprite then
             ensureMultiSpriteSquares(self, square)
             local members = buildFloatingGridMembers(self, square)
@@ -464,7 +493,8 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         return invItem ~= nil
     end
 
-    if square:isVehicleIntersecting() then
+    -- Wall hangings / overlays: never skip wall/facing checks.
+    if square:isVehicleIntersecting() and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace()) then
         return false
     end
 
@@ -482,7 +512,17 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
             return false
         end
         for _, gridMember in ipairs(sgrid) do
-            if not self:canPlaceMoveableInternal(character, gridMember.square, invItem) then
+            local memberSq = gridMember.square
+            if not memberSq and gridMember.x ~= nil and gridMember.y ~= nil then
+                local spriteGrid = self.sprite:getSpriteGrid()
+                if spriteGrid then
+                    local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
+                    local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
+                    memberSq = LayeredPlacement.ensureGridSquare(sX + gridMember.x, sY + gridMember.y, square:getZ())
+                    gridMember.square = memberSq
+                end
+            end
+            if not self:canPlaceMoveableInternal(character, memberSq, invItem) then
                 return false
             end
         end
@@ -532,13 +572,13 @@ local function walkToDecorSquare(props, character, square)
 end
 
 --- Floating high/low Place/Pickup: treat like movables cheat so the spinner
---- cannot cancel before complete() (that was the silent no-place bug).
+--- cannot cancel before complete() (Object-type string lights only).
 local function isFloatingDecorAction(action)
     if not action or (action.mode ~= "place" and action.mode ~= "pickup") then
         return false
     end
     local props = action.moveProps or action.origMoveProps
-    return isFloatingHighLow(props)
+    return isFloatingObjectDecor(props)
 end
 
 local function isCatwalkReachAction(action)
@@ -573,9 +613,9 @@ local function isCatwalkReachAction(action)
     return false
 end
 
---- Floating highs: skip pathing entirely (cheat-style). Just start the action.
+--- Object-type floating highs: skip pathing entirely (cheat-style). Just start the action.
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
-    if isFloatingHighLow(self) and (mode == "place" or mode == "pickup") and character and square then
+    if isFloatingObjectDecor(self) and (mode == "place" or mode == "pickup") and character and square then
         ensureMultiSpriteSquares(self, square)
         tryEquipModeTool(self, character, mode)
         return true
