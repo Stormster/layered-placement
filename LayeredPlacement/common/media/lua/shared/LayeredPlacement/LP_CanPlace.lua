@@ -294,7 +294,8 @@ local function forceSpawnDecor(square, spriteName, item)
                 obj:getCustomSettingsFromItem(item)
             end
         else
-            obj = IsoObject.new(getCell(), square, spriteName)
+            -- Match vanilla N/W WallOverlay place: IsoObject from IsoSprite.
+            obj = IsoObject.new(getCell(), square, spr)
         end
         if obj and item and GameEntityFactory then
             if item.hasComponents and (not item:hasComponents()) and GameEntityFactory.CreateIsoEntityFromCellLoading then
@@ -307,6 +308,8 @@ local function forceSpawnDecor(square, spriteName, item)
         square:AddSpecialObject(obj)
         if isServer() and obj.transmitCompleteItemToClients then
             obj:transmitCompleteItemToClients()
+        elseif isClient() and obj.transmitCompleteItemToServer then
+            obj:transmitCompleteItemToServer()
         end
         if square.RecalcProperties then
             square:RecalcProperties()
@@ -497,9 +500,129 @@ local function cheatPickUpFloating(props, character, square, createItem)
     return props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
 end
 
---- Wall hangings: place ourselves so we never consume the item when vanilla's
---- WallOverlay path finds no wall (forceAllow + empty attach = disappear).
---- Still skips the one-overlay / one-IsHigh occupancy re-check.
+--- Count this sprite as a free object or as a wall child/attached overlay
+--- (incl. the adjacent wall square N/W overlays attach to).
+local function countWallDecorPresence(props, square, spriteName)
+    local function countSpriteOnList(list, spriteName)
+        if not list then
+            return 0
+        end
+        local n = 0
+        for j = 0, list:size() - 1 do
+            local entry = list:get(j)
+            local spr = entry and (entry.getParentSprite and entry:getParentSprite() or entry.getSprite and entry:getSprite())
+            if spr and spr:getName() == spriteName then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    local function countOn(sq)
+        if not sq then
+            return 0
+        end
+        local n = countSprite(sq, spriteName)
+        if not sq.getObjects then
+            return n
+        end
+        local objects = sq:getObjects()
+        if not objects then
+            return n
+        end
+        for i = 0, objects:size() - 1 do
+            local obj = objects:get(i)
+            if obj then
+                n = n + countSpriteOnList(obj.getChildSprites and obj:getChildSprites(), spriteName)
+                n = n + countSpriteOnList(obj.getAttachedAnimSprite and obj:getAttachedAnimSprite(), spriteName)
+            end
+        end
+        return n
+    end
+
+    local n = countOn(square)
+    local wall = getWallObjectForDecor(props, square)
+    if wall and wall.getSquare then
+        local wsq = wall:getSquare()
+        if wsq and wsq ~= square then
+            n = n + countOn(wsq)
+        elseif wall then
+            -- Wall on this square: also count directly on the wall object in case
+            -- square object iteration missed a thumpable edge case.
+            n = n + countSpriteOnList(wall.getChildSprites and wall:getChildSprites(), spriteName)
+            n = n + countSpriteOnList(wall.getAttachedAnimSprite and wall:getAttachedAnimSprite(), spriteName)
+        end
+    end
+    return n
+end
+
+--- Attach a WallOverlay to the wall as a child/attached anim, verifying it stuck.
+--- Wallpaper replaces the wall's main sprite but keeps the same wall object —
+--- AttachExistingAnim can still no-op if the wall already has attached anims
+--- (trim, dirt, cracks), so we also try the explicit child-sprite add vanilla used to use.
+local function attachWallOverlay(wall, spriteName)
+    if not wall or not spriteName then
+        return false
+    end
+    local spr = getSprite(spriteName)
+    if not spr then
+        return false
+    end
+
+    local function childCount()
+        local kids = wall.getChildSprites and wall:getChildSprites()
+        return kids and kids:size() or 0
+    end
+    local function attachedCount()
+        local anims = wall.getAttachedAnimSprite and wall:getAttachedAnimSprite()
+        return anims and anims:size() or 0
+    end
+
+    local beforeChild = childCount()
+    local beforeAnim = attachedCount()
+
+    pcall(function()
+        wall:AttachExistingAnim(spr, 0, 0, false, 0, false, 0)
+    end)
+    if childCount() > beforeChild or attachedCount() > beforeAnim then
+        if isClient() and wall.transmitUpdatedSpriteToServer then
+            wall:transmitUpdatedSpriteToServer()
+        end
+        if isServer() and wall.transmitUpdatedSpriteToClients then
+            wall:transmitUpdatedSpriteToClients()
+        end
+        return true
+    end
+
+    -- Explicit child-sprite add (older vanilla path).
+    local ok = pcall(function()
+        local overlay = spr.newInstance and spr:newInstance() or nil
+        if not overlay then
+            return
+        end
+        local sprList = wall:getChildSprites()
+        if not sprList then
+            sprList = ArrayList.new()
+        end
+        sprList:add(overlay)
+        wall:setChildSprites(sprList)
+        if isClient() and wall.transmitUpdatedSpriteToServer then
+            wall:transmitUpdatedSpriteToServer()
+        end
+        if isServer() and wall.transmitUpdatedSpriteToClients then
+            wall:transmitUpdatedSpriteToClients()
+        end
+    end)
+    if ok and (childCount() > beforeChild or attachedCount() > beforeAnim) then
+        return true
+    end
+    return false
+end
+
+--- Wall hangings: never remove the inventory item unless we can see the sprite
+--- on the tile afterward. Vanilla E/S WallOverlay attach often no-ops when the
+--- wall already has attached anims (wallpaper isn't required — world trim/dirt
+--- blends are enough), which used to eat the item with nothing shown.
 local function placeWallDecor(props, character, square, origSpriteName)
     if not props or not character or not square then
         return false
@@ -508,11 +631,52 @@ local function placeWallDecor(props, character, square, origSpriteName)
         return false
     end
 
-    -- Multi-sprite large paintings: our canPlace already greened stacking;
-    -- let vanilla place with forceAllow only when a surface exists.
-    if props.isMultiSprite then
-        _placeMoveable(props, character, square, origSpriteName, true)
+    local spriteName = props.spriteName or origSpriteName
+    if not spriteName then
+        return false
+    end
+
+    local function finishOk(item, how)
+        removePlacedInventoryItem(character, item)
+        if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+            ISMoveableCursor.clearCacheForAllPlayers()
+        end
+        LayeredPlacement.log("wall decor " .. how .. " @ "
+            .. tostring(square:getX()) .. "," .. tostring(square:getY())
+            .. "," .. tostring(square:getZ()))
         return true
+    end
+
+    if props.isMultiSprite then
+        local before = countWallDecorPresence(props, square, spriteName)
+        ensureMultiSpriteSquares(props, square)
+        local spriteGrid = props.sprite and props.sprite:getSpriteGrid()
+        local sgrid = props.getSpriteGridInfo and props:getSpriteGridInfo(square, false)
+        if not spriteGrid or not sgrid then
+            LayeredPlacement.log("multi wall decor: missing sprite grid")
+            return false
+        end
+        local item = props:findInInventoryMultiSprite(character, props.name .. " (1/1)")
+            or props:findInInventory(character, origSpriteName)
+        if not item then
+            return false
+        end
+        local placed = 0
+        for _, gridMember in ipairs(sgrid) do
+            local partSprite = gridMember.sprite and gridMember.sprite:getName() or spriteName
+            local partItem = item
+            if gridMember.sprite ~= spriteGrid:getAnchorSprite() then
+                partItem = props:instanceItem(partSprite) or item
+            end
+            if forceSpawnDecor(gridMember.square, partSprite, partItem) then
+                placed = placed + 1
+            end
+        end
+        if placed > 0 or countWallDecorPresence(props, square, spriteName) > before then
+            return finishOk(item, "multi-spawned")
+        end
+        LayeredPlacement.log("multi wall decor place produced nothing; item kept")
+        return false
     end
 
     local item = props:findInInventory(character, origSpriteName)
@@ -520,33 +684,35 @@ local function placeWallDecor(props, character, square, origSpriteName)
         return false
     end
 
-    local wall = getWallObjectForDecor(props, square)
-    if props.type == "WallOverlay" and not wall then
-        -- Flags say "wall" (stairs / odd frames) but getWallForFacing failed —
-        -- spawn a free object like vanilla's N/W overlay path instead of eating
-        -- the item on a no-op AttachExistingAnim.
-        if not forceSpawnDecor(square, props.spriteName, item) then
-            LayeredPlacement.log("wall overlay place aborted: no wall object")
-            return false
-        end
-    else
-        props:placeMoveableInternal(square, item, props.spriteName)
+    local before = countWallDecorPresence(props, square, spriteName)
+    local function appeared()
+        return countWallDecorPresence(props, square, spriteName) > before
     end
 
-    local inv = character:getInventory()
-    if inv then
-        inv:Remove(item)
-        if sendRemoveItemFromContainer then
-            sendRemoveItemFromContainer(inv, item)
-        end
+    local wall = getWallObjectForDecor(props, square)
+
+    -- 1) E/S-style: hang on the wall object (works with wallpapered walls;
+    --    wallpaper replaces the main sprite, attach targets the same object).
+    if wall and attachWallOverlay(wall, spriteName) and appeared() then
+        return finishOk(item, "wall-attached")
     end
-    if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
-        ISMoveableCursor.clearCacheForAllPlayers()
+
+    -- 2) N/W-style free object on the aimed square (visible even when attach
+    --    is a no-op because of existing wall attached-anims).
+    if forceSpawnDecor(square, spriteName, item) and appeared() then
+        return finishOk(item, "spawned")
     end
-    LayeredPlacement.log("wall decor placed @ "
-        .. tostring(square:getX()) .. "," .. tostring(square:getY())
-        .. "," .. tostring(square:getZ()))
-    return true
+
+    -- 3) Vanilla internal as last resort.
+    pcall(function()
+        props:placeMoveableInternal(square, item, spriteName)
+    end)
+    if appeared() then
+        return finishOk(item, "vanilla")
+    end
+
+    LayeredPlacement.log("wall decor place failed; item kept")
+    return false
 end
 
 --- Hanging decor: brush-spawn into place (no canPlace re-check, no spinner path).
@@ -577,11 +743,9 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         return false
     end
     if LayeredPlacement.isWallDecor(self) and LayeredPlacement.isPlaceHelpEnabled() and square then
-        if placeWallDecor(self, character, square, origSpriteName) then
-            return true
-        end
-        -- No attach surface: fall through without forceAllow so the item is kept.
-        return _placeMoveable(self, character, square, origSpriteName, forceAllow)
+        -- Do not fall through to vanilla: canPlace is green for stacking, and
+        -- vanilla WallOverlay place + item remove is exactly the disappear bug.
+        return placeWallDecor(self, character, square, origSpriteName)
     end
     if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) then
         forceAllow = true
