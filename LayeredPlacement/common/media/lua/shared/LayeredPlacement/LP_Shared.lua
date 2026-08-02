@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.1"
+LayeredPlacement.VERSION = "1.6.2"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -225,7 +225,9 @@ local function pickupAimScore(square)
     return score
 end
 
-function LayeredPlacement.ensureGridSquare(x, y, z)
+--- Create or fetch a grid square. force=true skips the isValidSquare gate so
+--- catwalk/railing edge tiles (often "invalid" but still placeable) can exist.
+function LayeredPlacement.ensureGridSquare(x, y, z, force)
     local cell = getCell()
     if not cell or x == nil or y == nil or z == nil then
         return nil
@@ -234,7 +236,6 @@ function LayeredPlacement.ensureGridSquare(x, y, z)
     if sq then
         return sq
     end
-    -- Prefer getOrCreate when available (admin/build paths use this).
     if cell.getOrCreateGridSquare then
         local ok, created = pcall(function()
             return cell:getOrCreateGridSquare(x, y, z)
@@ -243,10 +244,8 @@ function LayeredPlacement.ensureGridSquare(x, y, z)
             return created
         end
     end
-    -- Only create inside the world bounds; forcing squares outside them can
-    -- attach objects to chunks the game will never save.
     local world = getWorld and getWorld() or nil
-    if world and world.isValidSquare and not world:isValidSquare(x, y, z) then
+    if not force and world and world.isValidSquare and not world:isValidSquare(x, y, z) then
         return nil
     end
     local ok, created = pcall(function()
@@ -254,6 +253,60 @@ function LayeredPlacement.ensureGridSquare(x, y, z)
     end)
     if ok and created then
         return created
+    end
+    return nil
+end
+
+--- Lift a below-player square up to the player's Z (mesh fallthrough).
+--- Returns nil when we cannot get an upstairs tile — callers should treat that
+--- as "not here" rather than placing on the ground under the catwalk.
+function LayeredPlacement.liftToPlayerZ(character, square, playerNum)
+    if not character or not square then
+        return square
+    end
+    local charSq = character:getSquare() or character:getCurrentSquare()
+    if not charSq then
+        return square
+    end
+    local pz = charSq:getZ()
+    if square:getZ() >= pz then
+        return square
+    end
+    local cell = getCell()
+    if not cell then
+        return nil
+    end
+    local x, y = square:getX(), square:getY()
+    if screenToIsoX and screenToIsoY and getMouseX and getMouseY then
+        local pn = playerNum
+        if pn == nil and character.getPlayerNum then
+            pn = character:getPlayerNum()
+        end
+        if pn ~= nil then
+            local wx = screenToIsoX(pn, getMouseX(), getMouseY(), pz)
+            local wy = screenToIsoY(pn, getMouseX(), getMouseY(), pz)
+            if wx and wy then
+                x = math.floor(wx)
+                y = math.floor(wy)
+            end
+        end
+    end
+    -- Force-create: railing edges are often isValidSquare=false.
+    local lifted = LayeredPlacement.ensureGridSquare(x, y, pz, true)
+    if lifted then
+        return lifted
+    end
+    for r = 1, 2 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if math.abs(dx) == r or math.abs(dy) == r then
+                    lifted = LayeredPlacement.ensureGridSquare(x + dx, y + dy, pz, true)
+                    if lifted then
+                        return lifted
+                    end
+                end
+            end
+        end
     end
     return nil
 end
@@ -284,15 +337,16 @@ function LayeredPlacement.walkToNearbyFloor(character, square, keepActions)
     return false
 end
 
-local function getOrCreateSquare(cell, x, y, z)
-    return LayeredPlacement.ensureGridSquare(x, y, z)
+local function getOrCreateSquare(cell, x, y, z, force)
+    return LayeredPlacement.ensureGridSquare(x, y, z, force)
 end
 
 --- When the mouse hits a tall pillar/ground, the reprojected XY may be empty.
 --- Pickup: keep the exact tile if it has decor; only then search neighbors.
---- Place: stick to the exact aim tile (neighbor floor-snapping stole railing edges).
+--- Place: force-create upstairs tiles (railing edges are often "invalid").
 local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
-    local exact = getOrCreateSquare(cell, x, y, pz)
+    local force = mode == "place"
+    local exact = getOrCreateSquare(cell, x, y, pz, force)
 
     if mode == "pickup" then
         if pickupAimScore(exact) > 0 then
@@ -315,7 +369,6 @@ local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
         if bestScore > 0 then
             return best
         end
-        -- Nothing to pick nearby — still leave the ground; snap upstairs if possible.
         if exact then
             return exact
         end
@@ -334,7 +387,7 @@ local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
         return nil
     end
 
-    -- place
+    -- place: never silently keep the ground tile under mesh
     if exact then
         return exact
     end
@@ -342,7 +395,7 @@ local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
         for dx = -r, r do
             for dy = -r, r do
                 if math.abs(dx) == r or math.abs(dy) == r then
-                    local sq = getOrCreateSquare(cell, x + dx, y + dy, pz)
+                    local sq = getOrCreateSquare(cell, x + dx, y + dy, pz, true)
                     if sq then
                         return sq
                     end
@@ -357,7 +410,9 @@ end
 --- your floor instead. Re-project the mouse onto the player Z plane — lifting
 --- the ground tile's XY is wrong under isometric angles (common on catwalks).
 --- Near tall pillars the exact XY often has no upper square; snap to a nearby
---- player-Z tile (decor for pickup, floors for place).
+--- player-Z tile (decor for pickup, force-create for place).
+--- For high/low place: never fall back to the ground square — that caused a
+--- white cursor + spinner with nothing placed under catwalks.
 --- mode: optional "pickup" / "place" (nil defaults to place-style scoring)
 function LayeredPlacement.resolveFloatingSquare(character, square, props, playerNum, mode)
     if not LayeredPlacement.allowMeshFloorAim() then
@@ -366,8 +421,6 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
     if not square then
         return square
     end
-    -- High/low decor is the usual mesh case; also remap when props aren't ready yet
-    -- so the cursor can still snap before inventory props populate.
     if props and not (props.isHigh or props.isLow) then
         return square
     end
@@ -388,7 +441,6 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
     end
 
     local x, y = square:getX(), square:getY()
-    -- Re-hit the mouse against the player's floor (fixes angled look-through).
     if screenToIsoX and screenToIsoY and getMouseX and getMouseY then
         local pn = playerNum
         if pn == nil and character.getPlayerNum then
@@ -414,6 +466,11 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
                 .. " (" .. tostring(aimMode) .. ")"
         )
         return atPlayer
+    end
+    -- High/low place under mesh: refuse the ground tile so the cursor goes red
+    -- instead of fake-valid + silent fail.
+    if aimMode == "place" and (not props or props.isHigh or props.isLow) then
+        return nil
     end
     return square
 end

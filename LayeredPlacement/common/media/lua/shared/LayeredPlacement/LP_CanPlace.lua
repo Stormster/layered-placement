@@ -18,15 +18,48 @@ local function hasWallForDecor(props, square)
     return props:getWallForFacing(square, props.facing) and true or false
 end
 
---- True when wall/window-frame attach point exists for this facing.
-local function hasAttachSurface(props, square)
-    if not props or not square or not props.facing then
+--- True when this square (or the facing-adjacent one) has any wall-like flag.
+--- Stair landings and doorframes often fail the stricter getWallForFacing check
+--- even though a painting is clearly hanging on them.
+local function squareHasWallFlags(square)
+    if not square then
         return false
     end
-    if props.type == "WindowObject" then
-        return props:getWallForFacing(square, props.facing, "WindowFrame") and true or false
+    return square:has("WallN") or square:has("WallW") or square:has("WallNW")
+        or square:has("DoorWallN") or square:has("DoorWallW")
+        or square:has("WallNTrans") or square:has("WallWTrans") or square:has("WallNWTrans")
+end
+
+local function hasAttachSurface(props, square)
+    if not props or not square then
+        return false
     end
-    return hasWallForDecor(props, square)
+    if props.facing then
+        if props.type == "WindowObject" then
+            if props:getWallForFacing(square, props.facing, "WindowFrame") then
+                return true
+            end
+        elseif hasWallForDecor(props, square) then
+            return true
+        end
+    end
+    -- Facing-based lookup failed (stairs, odd frames): accept any wall flags on
+    -- this square or the neighbor getWallForFacing would have used.
+    if squareHasWallFlags(square) then
+        return true
+    end
+    if props.facing == "N" then
+        local south = square.getTileInDirection and square:getTileInDirection(IsoDirections.S)
+        if squareHasWallFlags(south) then
+            return true
+        end
+    elseif props.facing == "W" then
+        local east = square.getTileInDirection and square:getTileInDirection(IsoDirections.E)
+        if squareHasWallFlags(east) then
+            return true
+        end
+    end
+    return false
 end
 
 --- Brush-like occupancy: stack multiple highs/overlays, hang over furniture, and
@@ -50,30 +83,26 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
     end
 
     local isHighLow = props.isHigh or props.isLow
-    -- Parked cars under a catwalk flag upstairs tiles as vehicle-intersecting.
     if square:isVehicleIntersecting() and not (isHighLow and LayeredPlacement.allowFloatingPlace()) then
         return false
     end
 
     local t = props.type
     if t == "WallOverlay" or t == "WindowObject" or t == "WallObject" then
-        -- Vanilla only allows one overlay per wall, and blocks a second IsHigh when
-        -- one already exists — that's the "low works, high is red" poster case.
-        -- With either place helper on, stacking is free as long as the attach
-        -- surface exists (or floatingPlace lets WallObject highs hang without one).
+        -- Vanilla: one overlay per wall, and no second IsHigh. That is exactly
+        -- the red-high / placed-low poster case. Stack freely when we can see
+        -- any wall surface; with floatingPlace, WallObjects may hang without one.
         if hasAttachSurface(props, square) then
-            -- ok: stack freely on this wall
-        elseif t == "WallObject" and isHighLow and LayeredPlacement.allowFloatingPlace() then
-            -- ok: railing / open-air wall object
+            -- ok
+        elseif LayeredPlacement.allowFloatingPlace() and (t == "WallObject" or isHighLow) then
+            -- ok — railing / open air / "place anywhere"
         else
             return false
         end
     else
-        -- Hanging Object-type decor (string lights, canopies, chandeliers).
         if LayeredPlacement.allowFloatingPlace() then
-            -- ok (railings / catwalk edges / open air on that level)
+            -- ok
         elseif LayeredPlacement.allowLayeredPlace() then
-            -- Stacking over furniture only relaxes occupancy; still needs a floor.
             if not square:getFloor() then
                 return false
             end
@@ -125,10 +154,11 @@ local function ensureMultiSpriteSquares(props, square)
     local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
     local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
     local sZ = square:getZ()
+    local force = LayeredPlacement.allowFloatingPlace()
     for gx = 0, spriteGrid:getWidth() - 1 do
         for gy = 0, spriteGrid:getHeight() - 1 do
             if spriteGrid:getSprite(gx, gy) then
-                LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+                LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, force)
             end
         end
     end
@@ -210,7 +240,7 @@ local function buildFloatingGridMembers(props, square)
         for gy = 0, spriteGrid:getHeight() - 1 do
             local spr = spriteGrid:getSprite(gx, gy)
             if spr then
-                local memberSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+                local memberSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, true)
                 if not memberSq then
                     return nil
                 end
@@ -475,6 +505,16 @@ end
 --- occupancy re-check so stacked posters/highs actually commit.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if isFloatingObjectDecor(self) and square then
+        -- Mesh fallthrough: never commit highs onto the ground under a catwalk.
+        if LayeredPlacement.allowMeshFloorAim() and character then
+            local lifted = LayeredPlacement.liftToPlayerZ(character, square)
+            if lifted then
+                square = lifted
+            elseif character:getSquare() and square:getZ() < character:getSquare():getZ() then
+                LayeredPlacement.log("refuse place on ground under mesh")
+                return false
+            end
+        end
         if cheatPlaceFloating(self, character, square, origSpriteName) then
             return
         end
@@ -496,16 +536,21 @@ function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item,
         and not square:has("tree")
         and LayeredPlacement.hasPlaceRequirements(self, character)
     then
+        -- Still refuse the ground-under-mesh tile so the cursor isn't fake-green.
+        if LayeredPlacement.allowMeshFloorAim() and character then
+            local charSq = character:getSquare() or character:getCurrentSquare()
+            if charSq and square:getZ() < charSq:getZ() then
+                return false
+            end
+        end
         return true
     end
-    -- Wall/ceiling hangings: prefer our stacking rules over vanilla's
-    -- "one overlay / one IsHigh per wall" so a second high poster isn't red.
+    -- Wall hangings: prefer our stacking rules over vanilla's one-overlay /
+    -- one-IsHigh limit so a second poster on the same wall isn't red.
     if LayeredPlacement.isWallDecor(self) and LayeredPlacement.isPlaceHelpEnabled() then
         if tryAllowLayered(self, character, square, item, forceTypeObject) then
             return true
         end
-        -- Fall through to vanilla if we refused (no wall, etc.) so normal
-        -- valid placements still light up green.
     end
     local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
     if canPlace or not LayeredPlacement.isPlaceHelpEnabled() then
@@ -570,8 +615,18 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
     end
 
     -- Hanging decor (lights, canopies): green when the grid fits and we hold the
-    -- item(s). Requirements are still checked so the cursor doesn't lie.
+    -- item(s). Never validate against the ground tile under a catwalk.
     if isFloatingObjectDecor(self) then
+        if LayeredPlacement.allowMeshFloorAim() and character then
+            local lifted = LayeredPlacement.liftToPlayerZ(character, square)
+            if lifted then
+                square = lifted
+            end
+            local charSq = character:getSquare() or character:getCurrentSquare()
+            if charSq and square:getZ() < charSq:getZ() then
+                return false
+            end
+        end
         if not LayeredPlacement.hasPlaceRequirements(self, character) then
             return false
         end
@@ -590,6 +645,20 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
             invItem = self:findInInventoryMultiSprite(character, self.name .. " (1/1)") or item
         end
         return invItem ~= nil
+    end
+
+    -- Wall hangings / posters: stacking check lives here so the cursor turns
+    -- green even when vanilla would keep it red for a second high/overlay.
+    if LayeredPlacement.isWallDecor(self) then
+        if square:isVehicleIntersecting()
+            and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace())
+        then
+            return false
+        end
+        if tryAllowLayered(self, character, square, item) then
+            return true
+        end
+        return self:canPlaceMoveableInternal(character, square, item)
     end
 
     -- Wall hangings: allow over vehicles when floating is on; otherwise keep

@@ -113,9 +113,16 @@ local function hookCursor()
         local ok = _isValid(self, square)
         local props = self.currentMoveProps or self.origMoveProps
         local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props, self.player, "place")
+        if target == nil and square and props and (props.isHigh or props.isLow) then
+            -- Could not lift off the ground under mesh — show invalid, don't fake-place.
+            self.square = square
+            self.currentSquare = square
+            self.canCreate = false
+            self.colorMod = ISMoveableCursor.invalidColor
+            return false
+        end
         if target and target ~= square then
             ok = _isValid(self, target)
-            -- create() / DoTileBuilding use square + currentSquare; keep both remapped.
             self.square = target
             self.currentSquare = target
         end
