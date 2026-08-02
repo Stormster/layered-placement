@@ -7,6 +7,3 @@ Separate Mod Options toggles for each feature. Crates/tables still stack normall
 B42.20+. Safe mid-save. Multiplayer should work now, enable on server and all clients, and please report any issues.
 
 Do not reupload. Subscribe on Workshop for updates.
-
-Workshop ID: 3775423228
-Mod ID: LayeredPlacement
