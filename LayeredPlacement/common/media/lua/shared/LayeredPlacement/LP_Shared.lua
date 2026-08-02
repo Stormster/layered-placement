@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.5.2"
+LayeredPlacement.VERSION = "1.5.3"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -151,13 +151,30 @@ function LayeredPlacement.ensureGridSquare(x, y, z)
     if sq then
         return sq
     end
-    if getWorld and getWorld():isValidSquare(x, y, z) then
+    -- Prefer getOrCreate when available (admin/build paths use this).
+    if cell.getOrCreateGridSquare then
+        local ok, created = pcall(function()
+            return cell:getOrCreateGridSquare(x, y, z)
+        end)
+        if ok and created then
+            return created
+        end
+    end
+    local world = getWorld and getWorld() or nil
+    if world and world.isValidSquare and world:isValidSquare(x, y, z) then
         local ok, created = pcall(function()
             return cell:createNewGridSquare(x, y, z, true)
         end)
-        if ok then
+        if ok and created then
             return created
         end
+    end
+    -- Last resort: some catwalk edge coords still place if we force-create.
+    local ok, created = pcall(function()
+        return cell:createNewGridSquare(x, y, z, true)
+    end)
+    if ok and created then
+        return created
     end
     return nil
 end
