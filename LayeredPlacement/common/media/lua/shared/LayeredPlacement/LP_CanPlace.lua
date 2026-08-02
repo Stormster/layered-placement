@@ -33,9 +33,6 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
     if not LayeredPlacement.isPlaceHelpEnabled() then
         return false
     end
-    if square:isVehicleIntersecting() then
-        return false
-    end
     if not isLayerDecor(props) then
         return false
     end
@@ -47,6 +44,12 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
     end
 
     local isHighLow = props.isHigh or props.isLow
+    -- Parked cars under a catwalk flag upstairs tiles as vehicle-intersecting.
+    -- Floating highs/lows on the railing should ignore that.
+    if square:isVehicleIntersecting() and not (isHighLow and LayeredPlacement.allowFloatingPlace()) then
+        return false
+    end
+
     if props.type == "WallOverlay" or props.type == "WindowObject" then
         if not hasWallForDecor(props, square) then
             return false
@@ -151,7 +154,7 @@ function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item,
 end
 
 --- Multi-sprite pickup needs every grid cell. Floating edge lights sometimes lose a
---- partner square lookup; ForceSingleItem highs can still be retrieved from the clicked tile.
+--- partner square lookup; allow retrieving highs/lows from the clicked tile anyway.
 function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
     if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
         ensureMultiSpriteSquares(self, square)
@@ -160,7 +163,7 @@ function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
     if ok or not LayeredPlacement.allowFloatingPlace() then
         return ok
     end
-    if not isLayerDecor(self) or not self.isMultiSprite or not self.isForceSingleItem then
+    if not isLayerDecor(self) or not (self.isHigh or self.isLow) then
         return ok
     end
     return self:canPickUpMoveableInternal(character, square, object, false)
@@ -174,10 +177,10 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
     if result ~= nil or not LayeredPlacement.allowFloatingPlace() then
         return result
     end
-    if not isLayerDecor(self) or not self.isForceSingleItem or not square then
+    if not isLayerDecor(self) or not (self.isHigh or self.isLow) or not square then
         return result
     end
-    -- Grid partner missing: remove whatever is on this tile and grant the single item.
+    -- Grid partner missing: remove whatever parts we can find and grant one item.
     local obj, sprInstance = self:findOnSquare(square, self.spriteName)
     if not obj then
         return result
@@ -206,7 +209,8 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
             end
         end
         if createItem then
-            local item = self:instanceItem(spriteGrid:getAnchorSprite():getName())
+            local anchor = spriteGrid:getAnchorSprite()
+            local item = self:instanceItem(anchor and anchor:getName() or self.spriteName)
             if item then
                 character:getInventory():AddItem(item)
                 if sendAddItemToContainer then
@@ -216,7 +220,7 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
         end
         return {}
     end
-    return _pickUpMoveable(self, character, square, createItem, true)
+    return self:pickUpMoveableInternal(character, square, obj, sprInstance, self.spriteName, createItem, forceAllow)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
@@ -227,7 +231,8 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
     if not square or square:has(IsoFlagType.water) then
         return false
     end
-    if square:isVehicleIntersecting() then
+    -- Same as tryAllowLayered: ignore under-catwalk vehicle flags for floating highs.
+    if square:isVehicleIntersecting() and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace()) then
         return false
     end
 
@@ -281,7 +286,7 @@ end
 
 --- Same-floor Chebyshev reach used by walkToAndEquip + timed-action isValid.
 --- Must stay in sync: starting Place without matching isValid just spins then cancels.
-local REACH_DIST = 2
+local REACH_DIST = 3
 
 local function withinCatwalkReach(character, square)
     local charSquare = character and character:getSquare()
@@ -293,6 +298,24 @@ local function withinCatwalkReach(character, square)
         return false
     end
     return chebyshevDist(charSquare, square) <= REACH_DIST
+end
+
+local function walkToDecorSquare(props, character, square)
+    if withinCatwalkReach(character, square) then
+        return true
+    end
+    if LayeredPlacement.walkToNearbyFloor(character, square, true) then
+        return true
+    end
+    -- Path adjacent to any cell of a multi-tile light string.
+    if props.isMultiSprite and props.getSpriteGridTopLeft and props.getMultiTileSquares and luautils.walkAdjSquares then
+        local left, top = props:getSpriteGridTopLeft(square:getX(), square:getY())
+        local squares = props:getMultiTileSquares(left, top, square:getZ())
+        if squares and luautils.walkAdjSquares(character, squares, true, true) then
+            return true
+        end
+    end
+    return false
 end
 
 local function isCatwalkReachAction(action)
@@ -319,13 +342,10 @@ function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSprit
     if (mode ~= "place" and mode ~= "pickup") or not isLayerDecor(self) or not character or not square then
         return ok
     end
-    if withinCatwalkReach(character, square) then
-        return tryEquipModeTool(self, character, mode)
+    if not walkToDecorSquare(self, character, square) then
+        return false
     end
-    if LayeredPlacement.walkToNearbyFloor(character, square, true) then
-        return tryEquipModeTool(self, character, mode)
-    end
-    return false
+    return tryEquipModeTool(self, character, mode)
 end
 
 --- walkToAndEquip can start the action via catwalkReach, but vanilla isValid still
