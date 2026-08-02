@@ -18,8 +18,20 @@ local function hasWallForDecor(props, square)
     return props:getWallForFacing(square, props.facing) and true or false
 end
 
---- Brush-like: high/low may float (no floor required). Wall decor still needs a wall
---- unless floating place is enabled.
+--- True when wall/window-frame attach point exists for this facing.
+local function hasAttachSurface(props, square)
+    if not props or not square or not props.facing then
+        return false
+    end
+    if props.type == "WindowObject" then
+        return props:getWallForFacing(square, props.facing, "WindowFrame") and true or false
+    end
+    return hasWallForDecor(props, square)
+end
+
+--- Brush-like occupancy: stack multiple highs/overlays, hang over furniture, and
+--- (with floatingPlace) skip the floor/wall requirement for highs. Skill/tool
+--- requirements still apply.
 local function tryAllowLayered(props, character, square, item, forceTypeObject)
     if not props.isMoveable or not square then
         return false
@@ -33,48 +45,35 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
     if props.isTableTop or (props.isStackable and props.isTable) then
         return false
     end
-    if square:has("tree") then
+    if square:has("tree") or square:has(IsoFlagType.water) then
         return false
     end
 
     local isHighLow = props.isHigh or props.isLow
     -- Parked cars under a catwalk flag upstairs tiles as vehicle-intersecting.
-    -- Floating highs/lows on the railing should ignore that.
     if square:isVehicleIntersecting() and not (isHighLow and LayeredPlacement.allowFloatingPlace()) then
         return false
     end
 
-    if props.type == "WallOverlay" or props.type == "WindowObject" then
-        if not hasWallForDecor(props, square) then
-            return false
-        end
-        if not LayeredPlacement.allowLayeredPlace() then
-            return false
-        end
-    elseif props.type == "WallObject" then
-        if isHighLow then
-            if not hasWallForDecor(props, square) then
-                if not LayeredPlacement.allowFloatingPlace() then
-                    return false
-                end
-            elseif not LayeredPlacement.allowLayeredPlace() and not LayeredPlacement.allowFloatingPlace() then
-                return false
-            end
+    local t = props.type
+    if t == "WallOverlay" or t == "WindowObject" or t == "WallObject" then
+        -- Vanilla only allows one overlay per wall, and blocks a second IsHigh when
+        -- one already exists — that's the "low works, high is red" poster case.
+        -- With either place helper on, stacking is free as long as the attach
+        -- surface exists (or floatingPlace lets WallObject highs hang without one).
+        if hasAttachSurface(props, square) then
+            -- ok: stack freely on this wall
+        elseif t == "WallObject" and isHighLow and LayeredPlacement.allowFloatingPlace() then
+            -- ok: railing / open-air wall object
         else
-            if not hasWallForDecor(props, square) then
-                return false
-            end
-            if not LayeredPlacement.allowLayeredPlace() then
-                return false
-            end
+            return false
         end
     else
-        -- Hanging decor (string lights, canopies, chandeliers).
+        -- Hanging Object-type decor (string lights, canopies, chandeliers).
         if LayeredPlacement.allowFloatingPlace() then
             -- ok (railings / catwalk edges / open air on that level)
         elseif LayeredPlacement.allowLayeredPlace() then
-            -- Stacking over furniture only relaxes the "tile is occupied" rule;
-            -- without the floating helper a real floor is still required.
+            -- Stacking over furniture only relaxes occupancy; still needs a floor.
             if not square:getFloor() then
                 return false
             end
@@ -472,7 +471,8 @@ end
 
 --- Hanging decor: place it directly instead of letting vanilla re-run its
 --- per-cell checks at complete(), which silently drops railing tiles.
---- Wall hangings are excluded — they need the vanilla wall-attach path.
+--- Wall hangings stay on the vanilla attach path, but forceAllow skips the
+--- occupancy re-check so stacked posters/highs actually commit.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if isFloatingObjectDecor(self) and square then
         if cheatPlaceFloating(self, character, square, origSpriteName) then
@@ -480,21 +480,32 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         end
         LayeredPlacement.log("floating place fell through to vanilla")
     end
-    if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) and (self.isHigh or self.isLow) then
+    if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) then
         forceAllow = true
     end
     return _placeMoveable(self, character, square, origSpriteName, forceAllow)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
-    -- Hanging decor only — never skip wall checks for hangings/flags. Skill/tool
-    -- requirements still apply; only the floor/wall geometry is relaxed.
-    if isFloatingObjectDecor(self) and square
+    if not square then
+        return false
+    end
+    -- Hanging Object-type decor (string lights): skip floor/wall geometry.
+    if isFloatingObjectDecor(self)
         and not square:has(IsoFlagType.water)
         and not square:has("tree")
         and LayeredPlacement.hasPlaceRequirements(self, character)
     then
         return true
+    end
+    -- Wall/ceiling hangings: prefer our stacking rules over vanilla's
+    -- "one overlay / one IsHigh per wall" so a second high poster isn't red.
+    if LayeredPlacement.isWallDecor(self) and LayeredPlacement.isPlaceHelpEnabled() then
+        if tryAllowLayered(self, character, square, item, forceTypeObject) then
+            return true
+        end
+        -- Fall through to vanilla if we refused (no wall, etc.) so normal
+        -- valid placements still light up green.
     end
     local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
     if canPlace or not LayeredPlacement.isPlaceHelpEnabled() then
@@ -581,8 +592,11 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         return invItem ~= nil
     end
 
-    -- Wall hangings / overlays: never skip wall/facing checks.
-    if square:isVehicleIntersecting() and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace()) then
+    -- Wall hangings: allow over vehicles when floating is on; otherwise keep
+    -- the vanilla vehicle check. Occupancy is handled in canPlaceMoveableInternal.
+    if square:isVehicleIntersecting()
+        and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace())
+    then
         return false
     end
 
