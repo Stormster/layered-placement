@@ -122,6 +122,7 @@ local _canPlaceMoveable = ISMoveableSpriteProps.canPlaceMoveable
 local _canPlaceMoveableInternal = ISMoveableSpriteProps.canPlaceMoveableInternal
 local _canPickUpMoveable = ISMoveableSpriteProps.canPickUpMoveable
 local _pickUpMoveable = ISMoveableSpriteProps.pickUpMoveable
+local _placeMoveable = ISMoveableSpriteProps.placeMoveable
 local _isWallBetweenParts = ISMoveableSpriteProps.isWallBetweenParts
 local _walkToAndEquip = ISMoveableSpriteProps.walkToAndEquip
 
@@ -143,6 +144,77 @@ local function ensureMultiSpriteSquares(props, square)
             end
         end
     end
+end
+
+local function findPlaceItem(props, character, origSpriteName)
+    if not character then
+        return nil
+    end
+    if props.isForceSingleItem then
+        local item = props:findInInventoryMultiSprite(character, props.name .. " (1/1)")
+        if item then
+            return item
+        end
+    end
+    if origSpriteName then
+        return props:findInInventory(character, origSpriteName)
+    end
+    return nil
+end
+
+--- Cursor validation can pass, then placeMoveable re-checks the 2-tile grid at
+--- complete() and silently returns (spinner finishes, nothing placed). Ensure
+--- partner squares exist and place floating highs brush-style when needed.
+function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
+    if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) and (self.isHigh or self.isLow) then
+        ensureMultiSpriteSquares(self, square)
+        if self.isMultiSprite and self.isForceSingleItem and LayeredPlacement.allowFloatingPlace() then
+            local spriteGrid = self.sprite and self.sprite:getSpriteGrid()
+            local item = findPlaceItem(self, character, origSpriteName)
+            local sgrid = spriteGrid and square and self:getSpriteGridInfo(square, false)
+            if item and sgrid then
+                local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
+                local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
+                local sZ = square:getZ()
+                local ok = true
+                for _, gridMember in ipairs(sgrid) do
+                    local memberSq = gridMember.square
+                    if not memberSq and gridMember.x ~= nil and gridMember.y ~= nil then
+                        memberSq = LayeredPlacement.ensureGridSquare(sX + gridMember.x, sY + gridMember.y, sZ)
+                        gridMember.square = memberSq
+                    end
+                    if not memberSq or not self:canPlaceMoveableInternal(character, memberSq, item) then
+                        ok = false
+                        break
+                    end
+                end
+                if ok then
+                    for _, gridMember in ipairs(sgrid) do
+                        if gridMember.square and gridMember.sprite then
+                            local gridItem = item
+                            if gridMember.sprite ~= spriteGrid:getAnchorSprite() then
+                                gridItem = self:instanceItem(gridMember.sprite:getName()) or item
+                            end
+                            self:placeMoveableInternal(gridMember.square, gridItem, gridMember.sprite:getName())
+                        end
+                    end
+                    character:getInventory():Remove(item)
+                    if sendRemoveItemFromContainer then
+                        sendRemoveItemFromContainer(character:getInventory(), item)
+                    end
+                    if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+                        ISMoveableCursor.clearCacheForAllPlayers()
+                    end
+                    LayeredPlacement.log("placed floating multi decor @ "
+                        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ()))
+                    return
+                end
+            end
+        end
+        -- Single-sprite floating high: allow force path if vanilla re-check is picky.
+        forceAllow = true
+    end
+    return _placeMoveable(self, character, square, origSpriteName, forceAllow)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
@@ -325,11 +397,26 @@ local function isCatwalkReachAction(action)
     if not action or (action.mode ~= "place" and action.mode ~= "pickup") then
         return false
     end
-    local props = action.moveProps
+    local props = action.moveProps or action.origMoveProps
     if not props or not isLayerDecor(props) then
         return false
     end
-    return withinCatwalkReach(action.character, action.square)
+    if withinCatwalkReach(action.character, action.square) then
+        return true
+    end
+    -- Allow finishing when adjacent to any cell of a multi-tile string.
+    if props.isMultiSprite and action.square and props.getSpriteGridTopLeft and props.getMultiTileSquares then
+        local left, top = props:getSpriteGridTopLeft(action.square:getX(), action.square:getY())
+        local squares = props:getMultiTileSquares(left, top, action.square:getZ())
+        if squares then
+            for _, sq in ipairs(squares) do
+                if withinCatwalkReach(action.character, sq) then
+                    return true
+                end
+            end
+        end
+    end
+    return false
 end
 
 --- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
