@@ -4,7 +4,7 @@ local OPTIONS = {
     {
         id = "layeredPlace",
         label = "Lights over furniture & stacked decor",
-        tooltip = "Place ceiling lights over tables/posters, stack multiple high decor items, and keep wall decor together. Floor furniture stays normal.",
+        tooltip = "Stack posters and wall decor (high + low on the same wall), place ceiling lights over furniture, and keep multiple wall hangings together. Floor furniture stays normal.",
     },
     {
         id = "floatingPlace",
