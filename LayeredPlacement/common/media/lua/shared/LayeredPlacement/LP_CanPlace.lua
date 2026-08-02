@@ -619,10 +619,12 @@ local function attachWallOverlay(wall, spriteName)
     return false
 end
 
---- Wall hangings: never remove the inventory item unless we can see the sprite
---- on the tile afterward. Vanilla E/S WallOverlay attach often no-ops when the
---- wall already has attached anims (wallpaper isn't required — world trim/dirt
---- blends are enough), which used to eat the item with nothing shown.
+--- Wall hangings: follow vanilla facing rules so the object lands on the same
+--- side as the hover ghost.
+---   N/W → free IsoObject on the aimed square (wall is on the adjacent tile;
+---         attaching would put it in the other room).
+---   E/S → AttachExistingAnim on the wall on this square.
+--- Never remove the inventory item unless the sprite is present afterward.
 local function placeWallDecor(props, character, square, origSpriteName)
     if not props or not character or not square then
         return false
@@ -643,22 +645,33 @@ local function placeWallDecor(props, character, square, origSpriteName)
         end
         LayeredPlacement.log("wall decor " .. how .. " @ "
             .. tostring(square:getX()) .. "," .. tostring(square:getY())
-            .. "," .. tostring(square:getZ()))
+            .. "," .. tostring(square:getZ())
+            .. " face=" .. tostring(props.facing))
         return true
     end
 
     if props.isMultiSprite then
         local before = countWallDecorPresence(props, square, spriteName)
+        -- Large paintings: vanilla grid place when possible.
+        pcall(function()
+            _placeMoveable(props, character, square, origSpriteName, true)
+        end)
+        if countWallDecorPresence(props, square, spriteName) > before then
+            -- Vanilla already removed the item on success.
+            if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+                ISMoveableCursor.clearCacheForAllPlayers()
+            end
+            LayeredPlacement.log("multi wall decor vanilla-placed")
+            return true
+        end
+        -- Fallback: free-spawn each part on its aimed square (same side as hover).
         ensureMultiSpriteSquares(props, square)
         local spriteGrid = props.sprite and props.sprite:getSpriteGrid()
         local sgrid = props.getSpriteGridInfo and props:getSpriteGridInfo(square, false)
-        if not spriteGrid or not sgrid then
-            LayeredPlacement.log("multi wall decor: missing sprite grid")
-            return false
-        end
         local item = props:findInInventoryMultiSprite(character, props.name .. " (1/1)")
             or props:findInInventory(character, origSpriteName)
-        if not item then
+        if not spriteGrid or not sgrid or not item then
+            LayeredPlacement.log("multi wall decor place produced nothing; item kept")
             return false
         end
         local placed = 0
@@ -689,21 +702,13 @@ local function placeWallDecor(props, character, square, origSpriteName)
         return countWallDecorPresence(props, square, spriteName) > before
     end
 
+    local facing = props.facing
     local wall = getWallObjectForDecor(props, square)
+    local isNorthOrWest = facing == "N" or facing == "W"
+    local isEastOrSouth = facing == "E" or facing == "S"
+    local isOverlay = props.type == "WallOverlay"
 
-    -- 1) E/S-style: hang on the wall object (works with wallpapered walls;
-    --    wallpaper replaces the main sprite, attach targets the same object).
-    if wall and attachWallOverlay(wall, spriteName) and appeared() then
-        return finishOk(item, "wall-attached")
-    end
-
-    -- 2) N/W-style free object on the aimed square (visible even when attach
-    --    is a no-op because of existing wall attached-anims).
-    if forceSpawnDecor(square, spriteName, item) and appeared() then
-        return finishOk(item, "spawned")
-    end
-
-    -- 3) Vanilla internal as last resort.
+    -- Prefer vanilla internals first — they already encode the side rules.
     pcall(function()
         props:placeMoveableInternal(square, item, spriteName)
     end)
@@ -711,12 +716,35 @@ local function placeWallDecor(props, character, square, origSpriteName)
         return finishOk(item, "vanilla")
     end
 
+    if isOverlay and isEastOrSouth and wall then
+        -- E/S: must attach to this square's wall (not free-spawn next door).
+        if attachWallOverlay(wall, spriteName) and appeared() then
+            return finishOk(item, "wall-attached")
+        end
+        -- Last resort on the aimed square so pickup/hover side still match.
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
+            return finishOk(item, "spawned-same-side")
+        end
+    elseif isOverlay and isNorthOrWest then
+        -- N/W: free object on the aimed square only — never attach to the
+        -- adjacent wall (that lands in the other room).
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
+            return finishOk(item, "spawned-aimed")
+        end
+    else
+        -- Plain WallObject / WindowObject: free object on aimed square.
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
+            return finishOk(item, "spawned")
+        end
+    end
+
     LayeredPlacement.log("wall decor place failed; item kept")
     return false
 end
 
 --- Hanging decor: brush-spawn into place (no canPlace re-check, no spinner path).
---- Wall hangings use placeWallDecor so stacked highs commit without vanishing.
+--- Wall hangings: use vanilla when it accepts the tile; otherwise facing-correct
+--- verified place so stacking still works without wrong-side / vanish bugs.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if isFloatingObjectDecor(self) and square then
         -- Prefer upstairs when the mouse fell through mesh, but still allow an
@@ -743,8 +771,16 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         return false
     end
     if LayeredPlacement.isWallDecor(self) and LayeredPlacement.isPlaceHelpEnabled() and square then
-        -- Do not fall through to vanilla: canPlace is green for stacking, and
-        -- vanilla WallOverlay place + item remove is exactly the disappear bug.
+        -- If vanilla already allows this tile, let it place — correct side + pickup.
+        local item = nil
+        if self.isMultiSprite and self.isForceSingleItem then
+            item = self:findInInventoryMultiSprite(character, self.name .. " (1/1)")
+        end
+        item = item or self:findInInventory(character, origSpriteName)
+        if item and _canPlaceMoveableInternal(self, character, square, item) then
+            return _placeMoveable(self, character, square, origSpriteName, false)
+        end
+        -- Occupancy blocked (second high/overlay, etc.): our verified path.
         return placeWallDecor(self, character, square, origSpriteName)
     end
     if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) then
