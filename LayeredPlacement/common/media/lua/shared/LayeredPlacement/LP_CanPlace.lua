@@ -146,6 +146,13 @@ local function ensureMultiSpriteSquares(props, square)
     end
 end
 
+local function isFloatingHighLow(props)
+    return LayeredPlacement.allowFloatingPlace()
+        and isLayerDecor(props)
+        and props
+        and (props.isHigh or props.isLow)
+end
+
 local function findPlaceItem(props, character, origSpriteName)
     if not character then
         return nil, nil
@@ -162,7 +169,6 @@ local function findPlaceItem(props, character, origSpriteName)
             return item, character:getInventory()
         end
     end
-    -- Last resort: any matching Moveable by display name (bags / name quirks).
     local inv = character:getInventory()
     if inv and inv.getItems then
         local items = inv:getItems()
@@ -176,8 +182,7 @@ local function findPlaceItem(props, character, origSpriteName)
     return nil, nil
 end
 
---- Build multi-tile member list ourselves. Vanilla getSpriteGridInfo can leave
---- nil squares on catwalk edges; we ensure each cell before placing.
+--- Build multi-tile member list ourselves (vanilla cache often has nil edge squares).
 local function buildFloatingGridMembers(props, square)
     if not props or not square or not props.sprite then
         return nil
@@ -229,115 +234,144 @@ local function removePlacedInventoryItem(character, item, container)
     end
 end
 
---- Cursor validation can pass, then placeMoveable re-checks the 2-tile grid at
---- complete() and silently returns (spinner finishes, nothing placed).
---- For floating multi ForceSingleItem highs: skip that re-check and place.
-function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
-    if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) and (self.isHigh or self.isLow) then
-        if self.isMultiSprite and self.isForceSingleItem and LayeredPlacement.allowFloatingPlace() and square then
-            ensureMultiSpriteSquares(self, square)
-            local item, container = findPlaceItem(self, character, origSpriteName)
-            local members, spriteGrid = buildFloatingGridMembers(self, square)
-            if item and members and spriteGrid then
-                local anchor = spriteGrid:getAnchorSprite()
-                local placed = 0
-                for _, gridMember in ipairs(members) do
-                    if gridMember.square and gridMember.sprite then
-                        local gridItem = item
-                        if gridMember.sprite ~= anchor then
-                            gridItem = self:instanceItem(gridMember.sprite:getName()) or item
-                        end
-                        local ok, err = pcall(function()
-                            self:placeMoveableInternal(gridMember.square, gridItem, gridMember.sprite:getName())
-                        end)
-                        if ok then
-                            placed = placed + 1
-                        else
-                            print("[LayeredPlacement] placeMoveableInternal failed: " .. tostring(err))
-                        end
-                    end
-                end
-                if placed > 0 then
-                    removePlacedInventoryItem(character, item, container)
-                    if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
-                        ISMoveableCursor.clearCacheForAllPlayers()
-                    end
-                    print("[LayeredPlacement] placed floating multi decor @ "
-                        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
-                        .. " parts=" .. tostring(placed))
-                    return
-                end
-            else
-                print("[LayeredPlacement] floating multi place skipped: item="
-                    .. tostring(item ~= nil) .. " members=" .. tostring(members ~= nil)
-                    .. " @ " .. tostring(square and square:getX()) .. ","
-                    .. tostring(square and square:getY()) .. "," .. tostring(square and square:getZ()))
+--- Brush/cheat spawn: bypass vanilla placeMoveableInternal quirks on empty air tiles.
+local function forceSpawnDecor(square, spriteName, item)
+    if not square or not spriteName then
+        return false
+    end
+    local spr = getSprite(spriteName)
+    if not spr then
+        return false
+    end
+    local obj = nil
+    local ok, err = pcall(function()
+        local tileType = spr:getType()
+        if tileType == IsoObjectType.lightswitch then
+            obj = IsoLightSwitch.new(getCell(), square, spr, square:getRoomID())
+            if obj.addLightSourceFromSprite then
+                obj:addLightSourceFromSprite()
+            end
+            if item and obj.getCustomSettingsFromItem then
+                obj:getCustomSettingsFromItem(item)
+            end
+        else
+            obj = IsoObject.new(getCell(), square, spriteName)
+        end
+        if obj and item and GameEntityFactory then
+            if item.hasComponents and (not item:hasComponents()) and GameEntityFactory.CreateIsoEntityFromCellLoading then
+                GameEntityFactory.CreateIsoEntityFromCellLoading(obj)
+            end
+            if GameEntityFactory.TransferComponents then
+                GameEntityFactory.TransferComponents(item, obj)
             end
         end
-        -- Single-sprite floating high: allow force path if vanilla re-check is picky.
-        forceAllow = true
+        square:AddSpecialObject(obj)
+        if isServer() and obj.transmitCompleteItemToClients then
+            obj:transmitCompleteItemToClients()
+        end
+        if square.RecalcProperties then
+            square:RecalcProperties()
+        end
+        if square.RecalcAllWithNeighbours then
+            square:RecalcAllWithNeighbours(true)
+        end
+        triggerEvent("OnObjectAdded", obj)
+    end)
+    if not ok then
+        print("[LayeredPlacement] forceSpawn failed: " .. tostring(err))
+        return false
     end
-    return _placeMoveable(self, character, square, origSpriteName, forceAllow)
+    return obj ~= nil
 end
 
-function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
-    local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
-    if canPlace or not LayeredPlacement.isPlaceHelpEnabled() then
-        return canPlace
+local function cheatPlaceFloating(props, character, square, origSpriteName)
+    ensureMultiSpriteSquares(props, square)
+    local item, container = findPlaceItem(props, character, origSpriteName)
+    if not item then
+        print("[LayeredPlacement] cheat place: no item for " .. tostring(props.name))
+        return false
     end
-    return tryAllowLayered(self, character, square, item, forceTypeObject)
+
+    local placed = 0
+    if props.isMultiSprite then
+        local members, spriteGrid = buildFloatingGridMembers(props, square)
+        if not members then
+            print("[LayeredPlacement] cheat place: could not build grid members")
+            return false
+        end
+        local anchor = spriteGrid:getAnchorSprite()
+        for _, gridMember in ipairs(members) do
+            local gridItem = item
+            if gridMember.sprite ~= anchor then
+                gridItem = props:instanceItem(gridMember.sprite:getName()) or item
+            end
+            local name = gridMember.sprite:getName()
+            pcall(function()
+                props:placeMoveableInternal(gridMember.square, gridItem, name)
+            end)
+            local found = props:findOnSquare(gridMember.square, name)
+            if not found then
+                forceSpawnDecor(gridMember.square, name, gridItem)
+                found = props:findOnSquare(gridMember.square, name)
+            end
+            if found then
+                placed = placed + 1
+            end
+        end
+    else
+        local name = props.spriteName or origSpriteName
+        pcall(function()
+            props:placeMoveableInternal(square, item, name)
+        end)
+        local found = props:findOnSquare(square, name)
+        if not found then
+            forceSpawnDecor(square, name, item)
+            found = props:findOnSquare(square, name)
+        end
+        if found then
+            placed = 1
+        end
+    end
+
+    if placed > 0 then
+        removePlacedInventoryItem(character, item, container)
+        if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+            ISMoveableCursor.clearCacheForAllPlayers()
+        end
+        print("[LayeredPlacement] cheat-placed floating decor @ "
+            .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
+            .. " parts=" .. tostring(placed))
+        return true
+    end
+    print("[LayeredPlacement] cheat place produced 0 parts")
+    return false
 end
 
---- Multi-sprite pickup needs every grid cell. Floating edge lights sometimes lose a
---- partner square lookup; allow retrieving highs/lows from the clicked tile anyway.
-function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
-    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
-        ensureMultiSpriteSquares(self, square)
-    end
-    local ok = _canPickUpMoveable(self, character, square, object)
-    if ok or not LayeredPlacement.allowFloatingPlace() then
-        return ok
-    end
-    if not isLayerDecor(self) or not (self.isHigh or self.isLow) then
-        return ok
-    end
-    return self:canPickUpMoveableInternal(character, square, object, false)
-end
-
-function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, forceAllow)
-    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
-        ensureMultiSpriteSquares(self, square)
-    end
-    local result = _pickUpMoveable(self, character, square, createItem, forceAllow)
-    if result ~= nil or not LayeredPlacement.allowFloatingPlace() then
+local function cheatPickUpFloating(props, character, square, createItem)
+    ensureMultiSpriteSquares(props, square)
+    -- forceAllow=true: same as movables cheat for this tile.
+    local result = _pickUpMoveable(props, character, square, createItem, true)
+    if result ~= nil then
         return result
     end
-    if not isLayerDecor(self) or not (self.isHigh or self.isLow) or not square then
-        return result
-    end
-    -- Grid partner missing: remove whatever parts we can find and grant one item.
-    local obj, sprInstance = self:findOnSquare(square, self.spriteName)
+    local obj, sprInstance = props:findOnSquare(square, props.spriteName)
     if not obj then
-        return result
+        return nil
     end
-    if not (forceAllow or character:isMovablesCheat() or ISMoveableDefinitions.cheat
-        or self:canPickUpMoveableInternal(character, square, not sprInstance and obj or nil, false)) then
-        return result
-    end
-    local spriteGrid = self.sprite and self.sprite:getSpriteGrid()
+    local spriteGrid = props.sprite and props.sprite:getSpriteGrid()
     if spriteGrid then
-        local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
-        local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
+        local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
+        local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
         local sZ = square:getZ()
         for gx = 0, spriteGrid:getWidth() - 1 do
             for gy = 0, spriteGrid:getHeight() - 1 do
                 local partSprite = spriteGrid:getSprite(gx, gy)
                 if partSprite then
-                    local partSq = getCell():getGridSquare(sX + gx, sY + gy, sZ)
-                    local partObj, partSpr = self:findOnSquare(partSq, partSprite:getName())
+                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+                    local partObj, partSpr = props:findOnSquare(partSq, partSprite:getName())
                     if partObj then
-                        self:pickUpMoveableInternal(
-                            character, partSq, partObj, partSpr, partSprite:getName(), false, forceAllow
+                        props:pickUpMoveableInternal(
+                            character, partSq, partObj, partSpr, partSprite:getName(), false, true
                         )
                     end
                 end
@@ -345,7 +379,7 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
         end
         if createItem then
             local anchor = spriteGrid:getAnchorSprite()
-            local item = self:instanceItem(anchor and anchor:getName() or self.spriteName)
+            local item = props:instanceItem(anchor and anchor:getName() or props.spriteName)
             if item then
                 character:getInventory():AddItem(item)
                 if sendAddItemToContainer then
@@ -353,9 +387,56 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
                 end
             end
         end
+        if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+            ISMoveableCursor.clearCacheForAllPlayers()
+        end
+        print("[LayeredPlacement] cheat-picked floating multi decor")
         return {}
     end
-    return self:pickUpMoveableInternal(character, square, obj, sprInstance, self.spriteName, createItem, forceAllow)
+    return props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
+end
+
+--- Floating highs/lows: cheat them into place (no canPlace re-check).
+function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
+    if isFloatingHighLow(self) and square then
+        if cheatPlaceFloating(self, character, square, origSpriteName) then
+            return
+        end
+    end
+    if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) and (self.isHigh or self.isLow) then
+        forceAllow = true
+    end
+    return _placeMoveable(self, character, square, origSpriteName, forceAllow)
+end
+
+function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
+    -- Floating highs: treat like movables cheat for validation.
+    if isFloatingHighLow(self) and square and not square:has(IsoFlagType.water) and not square:has("tree") then
+        return true
+    end
+    local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
+    if canPlace or not LayeredPlacement.isPlaceHelpEnabled() then
+        return canPlace
+    end
+    return tryAllowLayered(self, character, square, item, forceTypeObject)
+end
+
+function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
+    if isFloatingHighLow(self) then
+        ensureMultiSpriteSquares(self, square)
+        return true
+    end
+    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
+        ensureMultiSpriteSquares(self, square)
+    end
+    return _canPickUpMoveable(self, character, square, object)
+end
+
+function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, forceAllow)
+    if isFloatingHighLow(self) and square then
+        return cheatPickUpFloating(self, character, square, createItem)
+    end
+    return _pickUpMoveable(self, character, square, createItem, forceAllow)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
@@ -366,25 +447,33 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
     if not square or square:has(IsoFlagType.water) then
         return false
     end
-    -- Same as tryAllowLayered: ignore under-catwalk vehicle flags for floating highs.
-    if square:isVehicleIntersecting() and not ((self.isHigh or self.isLow) and LayeredPlacement.allowFloatingPlace()) then
+
+    -- Floating highs/lows: green cursor if the grid cells can exist + item is held.
+    if isFloatingHighLow(self) then
+        if self.isMultiSprite then
+            ensureMultiSpriteSquares(self, square)
+            local members = buildFloatingGridMembers(self, square)
+            if not members then
+                return false
+            end
+        end
+        local invItem = item
+        if self.isForceSingleItem then
+            invItem = self:findInInventoryMultiSprite(character, self.name .. " (1/1)") or item
+        end
+        return invItem ~= nil
+    end
+
+    if square:isVehicleIntersecting() then
         return false
     end
 
     if self.isMoveable and self.isMultiSprite then
-        local spriteGrid = self.sprite:getSpriteGrid()
-        if not spriteGrid then
-            return false
-        end
-
-        -- Floating catwalk edges often lack grid squares for the 2nd light tile.
         ensureMultiSpriteSquares(self, square)
-
         local sgrid = self:getSpriteGridInfo(square, false)
         if not sgrid then
             return false
         end
-
         local invItem = item
         if self.isForceSingleItem then
             invItem = self:findInInventoryMultiSprite(character, self.name .. " (1/1)") or item
@@ -392,17 +481,8 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         if not invItem then
             return false
         end
-
-        local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
-        local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
-        local sZ = square:getZ()
         for _, gridMember in ipairs(sgrid) do
-            local memberSq = gridMember.square
-            if not memberSq and gridMember.x ~= nil and gridMember.y ~= nil then
-                memberSq = LayeredPlacement.ensureGridSquare(sX + gridMember.x, sY + gridMember.y, sZ)
-                gridMember.square = memberSq
-            end
-            if not self:canPlaceMoveableInternal(character, memberSq, invItem) then
+            if not self:canPlaceMoveableInternal(character, gridMember.square, invItem) then
                 return false
             end
         end
@@ -420,7 +500,6 @@ function ISMoveableSpriteProps:isWallBetweenParts(spriteGrid, x, y, z)
 end
 
 --- Same-floor Chebyshev reach used by walkToAndEquip + timed-action isValid.
---- Must stay in sync: starting Place without matching isValid just spins then cancels.
 local REACH_DIST = 3
 
 local function withinCatwalkReach(character, square)
@@ -428,7 +507,6 @@ local function withinCatwalkReach(character, square)
     if not charSquare or not square then
         return false
     end
-    -- ISMoveablesAction:isValid requires the same Z.
     if charSquare:getZ() ~= square:getZ() then
         return false
     end
@@ -442,8 +520,8 @@ local function walkToDecorSquare(props, character, square)
     if LayeredPlacement.walkToNearbyFloor(character, square, true) then
         return true
     end
-    -- Path adjacent to any cell of a multi-tile light string.
     if props.isMultiSprite and props.getSpriteGridTopLeft and props.getMultiTileSquares and luautils.walkAdjSquares then
+        ensureMultiSpriteSquares(props, square)
         local left, top = props:getSpriteGridTopLeft(square:getX(), square:getY())
         local squares = props:getMultiTileSquares(left, top, square:getZ())
         if squares and luautils.walkAdjSquares(character, squares, true, true) then
@@ -453,7 +531,20 @@ local function walkToDecorSquare(props, character, square)
     return false
 end
 
+--- Floating high/low Place/Pickup: treat like movables cheat so the spinner
+--- cannot cancel before complete() (that was the silent no-place bug).
+local function isFloatingDecorAction(action)
+    if not action or (action.mode ~= "place" and action.mode ~= "pickup") then
+        return false
+    end
+    local props = action.moveProps or action.origMoveProps
+    return isFloatingHighLow(props)
+end
+
 local function isCatwalkReachAction(action)
+    if isFloatingDecorAction(action) then
+        return true
+    end
     if not LayeredPlacement.allowCatwalkReach() then
         return false
     end
@@ -467,13 +558,13 @@ local function isCatwalkReachAction(action)
     if withinCatwalkReach(action.character, action.square) then
         return true
     end
-    -- Allow finishing when adjacent to any cell of a multi-tile string.
     if props.isMultiSprite and action.square and props.getSpriteGridTopLeft and props.getMultiTileSquares then
+        ensureMultiSpriteSquares(props, action.square)
         local left, top = props:getSpriteGridTopLeft(action.square:getX(), action.square:getY())
         local squares = props:getMultiTileSquares(left, top, action.square:getZ())
         if squares then
             for _, sq in ipairs(squares) do
-                if withinCatwalkReach(action.character, sq) then
+                if sq and withinCatwalkReach(action.character, sq) then
                     return true
                 end
             end
@@ -482,9 +573,13 @@ local function isCatwalkReachAction(action)
     return false
 end
 
---- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
---- if the player is already next to the tile — or walk to a nearby floor tile first.
+--- Floating highs: skip pathing entirely (cheat-style). Just start the action.
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
+    if isFloatingHighLow(self) and (mode == "place" or mode == "pickup") and character and square then
+        ensureMultiSpriteSquares(self, square)
+        tryEquipModeTool(self, character, mode)
+        return true
+    end
     local ok = _walkToAndEquip(self, character, square, mode, origSpriteName)
     if ok or not LayeredPlacement.allowCatwalkReach() then
         return ok
@@ -498,10 +593,9 @@ function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSprit
     return tryEquipModeTool(self, character, mode)
 end
 
---- walkToAndEquip can start the action via catwalkReach, but vanilla isValid still
---- demands isAdjacentTo (dist 1). Extend adjacency so the action can finish.
 local _isAdjacentToAnySquare = ISMoveablesAction.isAdjacentToAnySquare
 local _isValidMoveablesAction = ISMoveablesAction.isValid
+local _getDurationMoveablesAction = ISMoveablesAction.getDuration
 
 function ISMoveablesAction:isAdjacentToAnySquare()
     if _isAdjacentToAnySquare(self) then
@@ -510,9 +604,26 @@ function ISMoveablesAction:isAdjacentToAnySquare()
     return isCatwalkReachAction(self)
 end
 
---- Also short-circuit the full isValid path: same-Z + adjacency abort is what
---- produces the Place spinner with no result on railing/catwalk tiles.
+--- Cheat-style validity: floating highs never abort mid-spinner on adjacency.
 function ISMoveablesAction:isValid()
+    if isFloatingDecorAction(self) then
+        if not self.square or not self.character then
+            self:stop()
+            return false
+        end
+        local plSquare = self.character:getSquare()
+        if not plSquare or plSquare:getZ() ~= self.square:getZ() then
+            self:stop()
+            return false
+        end
+        if isClient() and SafeHouse.isSafeHouse(self.square, self.character:getUsername(), true) then
+            if not SafeHouse.isSafehouseAllowLoot(self.square, self.character) then
+                self:stop()
+                return false
+            end
+        end
+        return true
+    end
     if isCatwalkReachAction(self) then
         if isClient() and SafeHouse.isSafeHouse(self.square, self.character:getUsername(), true) then
             if self.mode == "place" or self.mode == "pickup" then
@@ -527,8 +638,11 @@ function ISMoveablesAction:isValid()
     return _isValidMoveablesAction(self)
 end
 
---- Let vanilla place WallObjects once canPlace is allowed. The old createTile /
---- hand-rolled IsoLightSwitch path skipped TransferComponents and broke MP sync.
---- (Streetlight createTile remains vanilla's problem only.)
+function ISMoveablesAction:getDuration()
+    if isFloatingDecorAction(self) then
+        return 1
+    end
+    return _getDurationMoveablesAction(self)
+end
 
-LayeredPlacement.log("place hooks ready (floating decor)")
+LayeredPlacement.log("place hooks ready (floating cheat place/pickup)")

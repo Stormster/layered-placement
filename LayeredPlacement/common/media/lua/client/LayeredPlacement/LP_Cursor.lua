@@ -54,8 +54,12 @@ local function walkToCursorTarget(self, square)
 end
 
 --- Multi-sprite cursor skips FloorTileCursor and only ghosts real floors.
---- Floating railing lights often have no floor, so draw the white square ourselves.
+--- Floating railing lights often have no floor, so draw the white square ourselves
+--- when mesh-aim or floating place is on.
 local function drawMeshFloorCursor(self, x, y, z)
+    if not (LayeredPlacement.allowMeshFloorAim() or LayeredPlacement.allowFloatingPlace()) then
+        return
+    end
     local mode = ISMoveableCursor.mode[self.player]
     if (mode ~= "pickup" and mode ~= "place") or not self.currentMoveProps or not self.currentMoveProps.isMultiSprite then
         return
@@ -180,7 +184,8 @@ local function hookCursor()
     end
 
     -- tryBuild requires walkTo before create(). Floating railing tiles often fail
-    -- canReachTo even when you're standing next to them — same catwalkReach idea.
+    -- canReachTo even when you're standing next to them.
+    -- floatingPlace owns cheat skip for highs/lows; catwalkReach is the milder helper.
     function ISMoveableCursor:walkTo(x, y, z)
         local cs = aimSquare(self)
         if LayeredPlacement.allowMeshFloorAim() and cs then
@@ -189,14 +194,21 @@ local function hookCursor()
         if _walkTo(self, x, y, z) then
             return true
         end
-        if not LayeredPlacement.allowCatwalkReach() then
-            return false
-        end
         local mode = ISMoveableCursor.mode[self.player]
         if mode ~= "place" and mode ~= "pickup" then
             return false
         end
         local props = self.currentMoveProps or self.origMoveProps
+        local floatingHighLow = LayeredPlacement.allowFloatingPlace()
+            and isDecorProps(props)
+            and props
+            and (props.isHigh or props.isLow)
+        if floatingHighLow then
+            return true
+        end
+        if not LayeredPlacement.allowCatwalkReach() then
+            return false
+        end
         if not isDecorProps(props) then
             return false
         end
