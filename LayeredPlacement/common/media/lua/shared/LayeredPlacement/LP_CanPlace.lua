@@ -148,67 +148,130 @@ end
 
 local function findPlaceItem(props, character, origSpriteName)
     if not character then
-        return nil
+        return nil, nil
     end
     if props.isForceSingleItem then
-        local item = props:findInInventoryMultiSprite(character, props.name .. " (1/1)")
+        local item, container = props:findInInventoryMultiSprite(character, props.name .. " (1/1)")
         if item then
-            return item
+            return item, container
         end
     end
     if origSpriteName then
-        return props:findInInventory(character, origSpriteName)
+        local item = props:findInInventory(character, origSpriteName)
+        if item then
+            return item, character:getInventory()
+        end
     end
-    return nil
+    -- Last resort: any matching Moveable by display name (bags / name quirks).
+    local inv = character:getInventory()
+    if inv and inv.getItems then
+        local items = inv:getItems()
+        for i = 0, items:size() - 1 do
+            local item = items:get(i)
+            if instanceof(item, "Moveable") and item:getName() == props.name then
+                return item, inv
+            end
+        end
+    end
+    return nil, nil
+end
+
+--- Build multi-tile member list ourselves. Vanilla getSpriteGridInfo can leave
+--- nil squares on catwalk edges; we ensure each cell before placing.
+local function buildFloatingGridMembers(props, square)
+    if not props or not square or not props.sprite then
+        return nil
+    end
+    local spriteGrid = props.sprite:getSpriteGrid()
+    if not spriteGrid then
+        return nil
+    end
+    local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
+    local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
+    local sZ = square:getZ()
+    local members = {}
+    for gx = 0, spriteGrid:getWidth() - 1 do
+        for gy = 0, spriteGrid:getHeight() - 1 do
+            local spr = spriteGrid:getSprite(gx, gy)
+            if spr then
+                local memberSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+                if not memberSq then
+                    return nil
+                end
+                table.insert(members, { square = memberSq, sprite = spr, x = gx, y = gy })
+            end
+        end
+    end
+    if #members == 0 then
+        return nil
+    end
+    return members, spriteGrid
+end
+
+local function removePlacedInventoryItem(character, item, container)
+    if not character or not item then
+        return
+    end
+    if container == "floor" then
+        if item:getWorldItem() ~= nil then
+            item:getWorldItem():getSquare():transmitRemoveItemFromSquare(item:getWorldItem())
+            item:getWorldItem():getSquare():removeWorldObject(item:getWorldItem())
+            item:setWorldItem(nil)
+        end
+        return
+    end
+    local inv = container or character:getInventory()
+    if inv and inv.Remove then
+        inv:Remove(item)
+        if sendRemoveItemFromContainer then
+            sendRemoveItemFromContainer(inv, item)
+        end
+    end
 end
 
 --- Cursor validation can pass, then placeMoveable re-checks the 2-tile grid at
---- complete() and silently returns (spinner finishes, nothing placed). Ensure
---- partner squares exist and place floating highs brush-style when needed.
+--- complete() and silently returns (spinner finishes, nothing placed).
+--- For floating multi ForceSingleItem highs: skip that re-check and place.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) and (self.isHigh or self.isLow) then
-        ensureMultiSpriteSquares(self, square)
-        if self.isMultiSprite and self.isForceSingleItem and LayeredPlacement.allowFloatingPlace() then
-            local spriteGrid = self.sprite and self.sprite:getSpriteGrid()
-            local item = findPlaceItem(self, character, origSpriteName)
-            local sgrid = spriteGrid and square and self:getSpriteGridInfo(square, false)
-            if item and sgrid then
-                local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
-                local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
-                local sZ = square:getZ()
-                local ok = true
-                for _, gridMember in ipairs(sgrid) do
-                    local memberSq = gridMember.square
-                    if not memberSq and gridMember.x ~= nil and gridMember.y ~= nil then
-                        memberSq = LayeredPlacement.ensureGridSquare(sX + gridMember.x, sY + gridMember.y, sZ)
-                        gridMember.square = memberSq
-                    end
-                    if not memberSq or not self:canPlaceMoveableInternal(character, memberSq, item) then
-                        ok = false
-                        break
-                    end
-                end
-                if ok then
-                    for _, gridMember in ipairs(sgrid) do
-                        if gridMember.square and gridMember.sprite then
-                            local gridItem = item
-                            if gridMember.sprite ~= spriteGrid:getAnchorSprite() then
-                                gridItem = self:instanceItem(gridMember.sprite:getName()) or item
-                            end
+        if self.isMultiSprite and self.isForceSingleItem and LayeredPlacement.allowFloatingPlace() and square then
+            ensureMultiSpriteSquares(self, square)
+            local item, container = findPlaceItem(self, character, origSpriteName)
+            local members, spriteGrid = buildFloatingGridMembers(self, square)
+            if item and members and spriteGrid then
+                local anchor = spriteGrid:getAnchorSprite()
+                local placed = 0
+                for _, gridMember in ipairs(members) do
+                    if gridMember.square and gridMember.sprite then
+                        local gridItem = item
+                        if gridMember.sprite ~= anchor then
+                            gridItem = self:instanceItem(gridMember.sprite:getName()) or item
+                        end
+                        local ok, err = pcall(function()
                             self:placeMoveableInternal(gridMember.square, gridItem, gridMember.sprite:getName())
+                        end)
+                        if ok then
+                            placed = placed + 1
+                        else
+                            print("[LayeredPlacement] placeMoveableInternal failed: " .. tostring(err))
                         end
                     end
-                    character:getInventory():Remove(item)
-                    if sendRemoveItemFromContainer then
-                        sendRemoveItemFromContainer(character:getInventory(), item)
-                    end
+                end
+                if placed > 0 then
+                    removePlacedInventoryItem(character, item, container)
                     if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
                         ISMoveableCursor.clearCacheForAllPlayers()
                     end
-                    LayeredPlacement.log("placed floating multi decor @ "
-                        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ()))
+                    print("[LayeredPlacement] placed floating multi decor @ "
+                        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
+                        .. " parts=" .. tostring(placed))
                     return
                 end
+            else
+                print("[LayeredPlacement] floating multi place skipped: item="
+                    .. tostring(item ~= nil) .. " members=" .. tostring(members ~= nil)
+                    .. " @ " .. tostring(square and square:getX()) .. ","
+                    .. tostring(square and square:getY()) .. "," .. tostring(square and square:getZ()))
             end
         end
         -- Single-sprite floating high: allow force path if vanilla re-check is picky.
