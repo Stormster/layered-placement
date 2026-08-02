@@ -113,14 +113,8 @@ local function hookCursor()
         local ok = _isValid(self, square)
         local props = self.currentMoveProps or self.origMoveProps
         local target = LayeredPlacement.resolveFloatingSquare(self.character, square, props, self.player, "place")
-        if target == nil and square and props and (props.isHigh or props.isLow) then
-            -- Could not lift off the ground under mesh — show invalid, don't fake-place.
-            self.square = square
-            self.currentSquare = square
-            self.canCreate = false
-            self.colorMod = ISMoveableCursor.invalidColor
-            return false
-        end
+        -- nil target = could not lift; keep the aimed square (ground-wall from a
+        -- catwalk is a valid intentional aim for floating highs).
         if target and target ~= square then
             ok = _isValid(self, target)
             self.square = target
@@ -159,8 +153,42 @@ local function hookCursor()
         function ISMoveableCursor:create(x, y, z, north, sprite)
             local cs = aimSquare(self)
             if LayeredPlacement.allowMeshFloorAim() and cs then
-                return _create(self, cs:getX(), cs:getY(), cs:getZ(), north, sprite)
+                x, y, z = cs:getX(), cs:getY(), cs:getZ()
             end
+
+            -- Brush-style: floating highs place/pick instantly — no spinner, no
+            -- timed-action Z/adjacency cancel that was killing catwalk aims.
+            local mode = ISMoveableCursor.mode[self.player]
+            local props = self.currentMoveProps or self.origMoveProps
+            if (mode == "place" or mode == "pickup")
+                and LayeredPlacement.isFloatingDecor(props)
+                and self.canCreate
+            then
+                if self:cannotCreate(x, y, z) then
+                    ISTimedActionQueue.clear(getSpecificPlayer(self.player))
+                    self.cursorFacing = nil
+                    self.joypadFacing = nil
+                    self.objectListCache = nil
+                    return
+                end
+                local square = (getCell() and getCell():getGridSquare(x, y, z)) or cs
+                if square and LayeredPlacement.withinBrushReach(self.character, square) then
+                    if mode == "place" then
+                        props:placeMoveableViaCursor(
+                            self.character, square, self.origSpriteName, self
+                        )
+                    else
+                        props:pickUpMoveableViaCursor(
+                            self.character, square, self.origSpriteName, self
+                        )
+                    end
+                    self.cursorFacing = nil
+                    self.joypadFacing = nil
+                    self.objectListCache = nil
+                    return
+                end
+            end
+
             return _create(self, x, y, z, north, sprite)
         end
     end
@@ -194,7 +222,7 @@ local function hookCursor()
         -- Hanging decor you're already standing next to: start the action without
         -- pathing. Wall hangings and anything further away path normally.
         if LayeredPlacement.isFloatingDecor(props)
-            and LayeredPlacement.withinReach(self.character, square or cs, LayeredPlacement.CHEAT_REACH)
+            and LayeredPlacement.withinBrushReach(self.character, square or cs)
         then
             return true
         end

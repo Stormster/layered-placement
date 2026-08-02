@@ -171,11 +171,12 @@ local function isFloatingObjectDecor(props)
 end
 
 --- The cheat path skips pathing and adjacency, so it needs its own range gate.
+--- Allow one Z of difference so catwalk → ground-wall aims still count.
 local function isFloatingDecorInReach(props, character, square)
     if not isFloatingObjectDecor(props) or not square then
         return false
     end
-    if LayeredPlacement.withinReach(character, square, LayeredPlacement.CHEAT_REACH) then
+    if LayeredPlacement.withinBrushReach(character, square) then
         return true
     end
     if not props.isMultiSprite or not props.getSpriteGridTopLeft or not props.getMultiTileSquares then
@@ -187,7 +188,7 @@ local function isFloatingDecorInReach(props, character, square)
         return false
     end
     for _, sq in ipairs(squares) do
-        if LayeredPlacement.withinReach(character, sq, LayeredPlacement.CHEAT_REACH) then
+        if LayeredPlacement.withinBrushReach(character, sq) then
             return true
         end
     end
@@ -346,16 +347,16 @@ local function countSprite(square, spriteName)
     return n
 end
 
---- Place one sprite, falling back to a direct spawn when vanilla refuses the tile.
+--- Brush spawn: direct object create first (admin-brush style), vanilla as backup.
 local function placePart(props, square, item, spriteName)
     local before = countSprite(square, spriteName)
-    pcall(function()
-        props:placeMoveableInternal(square, item, spriteName)
-    end)
+    forceSpawnDecor(square, spriteName, item)
     if countSprite(square, spriteName) > before then
         return true
     end
-    forceSpawnDecor(square, spriteName, item)
+    pcall(function()
+        props:placeMoveableInternal(square, item, spriteName)
+    end)
     return countSprite(square, spriteName) > before
 end
 
@@ -499,26 +500,33 @@ local function cheatPickUpFloating(props, character, square, createItem)
     return props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
 end
 
---- Hanging decor: place it directly instead of letting vanilla re-run its
---- per-cell checks at complete(), which silently drops railing tiles.
+--- Hanging decor: brush-spawn into place (no canPlace re-check, no spinner path).
 --- Wall hangings stay on the vanilla attach path, but forceAllow skips the
 --- occupancy re-check so stacked posters/highs actually commit.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if isFloatingObjectDecor(self) and square then
-        -- Mesh fallthrough: never commit highs onto the ground under a catwalk.
+        -- Prefer upstairs when the mouse fell through mesh, but still allow an
+        -- intentional ground-floor aim from a catwalk (brush reach covers dz=1).
         if LayeredPlacement.allowMeshFloorAim() and character then
             local lifted = LayeredPlacement.liftToPlayerZ(character, square)
-            if lifted then
-                square = lifted
-            elseif character:getSquare() and square:getZ() < character:getSquare():getZ() then
-                LayeredPlacement.log("refuse place on ground under mesh")
-                return false
+            if lifted and LayeredPlacement.withinBrushReach(character, lifted) then
+                -- Only steal the aim upstairs when the lifted tile is in reach and
+                -- the ground tile is not the one they are clearly aiming at with a wall.
+                local charSq = character:getSquare() or character:getCurrentSquare()
+                if charSq and square:getZ() < charSq:getZ() then
+                    local groundHasWall = square:has("WallN") or square:has("WallW")
+                        or square:has("WallNW") or square:has("DoorWallN") or square:has("DoorWallW")
+                    if not groundHasWall then
+                        square = lifted
+                    end
+                end
             end
         end
         if cheatPlaceFloating(self, character, square, origSpriteName) then
-            return
+            return true
         end
-        LayeredPlacement.log("floating place fell through to vanilla")
+        LayeredPlacement.log("brush place produced 0 parts")
+        return false
     end
     if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) then
         forceAllow = true
@@ -530,19 +538,12 @@ function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item,
     if not square then
         return false
     end
-    -- Hanging Object-type decor (string lights): skip floor/wall geometry.
+    -- Hanging Object-type decor (string lights): brush-valid when in reach.
     if isFloatingObjectDecor(self)
         and not square:has(IsoFlagType.water)
         and not square:has("tree")
         and LayeredPlacement.hasPlaceRequirements(self, character)
     then
-        -- Still refuse the ground-under-mesh tile so the cursor isn't fake-green.
-        if LayeredPlacement.allowMeshFloorAim() and character then
-            local charSq = character:getSquare() or character:getCurrentSquare()
-            if charSq and square:getZ() < charSq:getZ() then
-                return false
-            end
-        end
         return true
     end
     -- Wall hangings: prefer our stacking rules over vanilla's one-overlay /
@@ -614,21 +615,17 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         return false
     end
 
-    -- Hanging decor (lights, canopies): green when the grid fits and we hold the
-    -- item(s). Never validate against the ground tile under a catwalk.
+    -- Hanging decor (lights, canopies): brush-green when the grid fits and we
+    -- hold the item(s). Cross-Z aims (catwalk → ground wall) are allowed.
     if isFloatingObjectDecor(self) then
-        if LayeredPlacement.allowMeshFloorAim() and character then
-            local lifted = LayeredPlacement.liftToPlayerZ(character, square)
-            if lifted then
-                square = lifted
-            end
-            local charSq = character:getSquare() or character:getCurrentSquare()
-            if charSq and square:getZ() < charSq:getZ() then
-                return false
-            end
-        end
         if not LayeredPlacement.hasPlaceRequirements(self, character) then
             return false
+        end
+        if not LayeredPlacement.withinBrushReach(character, square) then
+            -- Still allow the cursor to show valid if multi-tile reaches us.
+            if not isFloatingDecorInReach(self, character, square) then
+                return false
+            end
         end
         if self.isMultiSprite then
             ensureMultiSpriteSquares(self, square)
