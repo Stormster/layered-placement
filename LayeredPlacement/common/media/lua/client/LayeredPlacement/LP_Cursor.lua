@@ -199,11 +199,13 @@ local function hookCursor()
             return false
         end
         local props = self.currentMoveProps or self.origMoveProps
-        local floatingHighLow = LayeredPlacement.allowFloatingPlace()
-            and isDecorProps(props)
+        -- Only Object-type floating highs skip walk (string lights). Wall hangings path normally.
+        local floatingObject = LayeredPlacement.allowFloatingPlace()
             and props
+            and props.isMoveable
             and (props.isHigh or props.isLow)
-        if floatingHighLow then
+            and (props.type == "Object" or props.type == nil)
+        if floatingObject then
             return true
         end
         if not LayeredPlacement.allowCatwalkReach() then
