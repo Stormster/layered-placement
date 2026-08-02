@@ -8,14 +8,23 @@ local function isLayerDecor(props)
     return LayeredPlacement.isPlacementDecor(props)
 end
 
-local function hasWallForDecor(props, square)
-    if not props.facing then
-        return false
+--- Vanilla wall object used by WallOverlay attach. Must succeed or place
+--- silently creates nothing while still consuming the inventory item.
+local function getWallObjectForDecor(props, square)
+    if not props or not square or not props.facing then
+        return nil
+    end
+    if props.type == "WindowObject" then
+        return props:getWallForFacing(square, props.facing, "WindowFrame")
     end
     if props.allowDoorFrame then
-        return props:getWallForFacing(square, props.facing, "WallAndDoor") and true or false
+        return props:getWallForFacing(square, props.facing, "WallAndDoor")
     end
-    return props:getWallForFacing(square, props.facing) and true or false
+    return props:getWallForFacing(square, props.facing)
+end
+
+local function hasWallForDecor(props, square)
+    return getWallObjectForDecor(props, square) and true or false
 end
 
 --- True when this square (or the facing-adjacent one) has any wall-like flag.
@@ -34,14 +43,8 @@ local function hasAttachSurface(props, square)
     if not props or not square then
         return false
     end
-    if props.facing then
-        if props.type == "WindowObject" then
-            if props:getWallForFacing(square, props.facing, "WindowFrame") then
-                return true
-            end
-        elseif hasWallForDecor(props, square) then
-            return true
-        end
+    if hasWallForDecor(props, square) then
+        return true
     end
     -- Facing-based lookup failed (stairs, odd frames): accept any wall flags on
     -- this square or the neighbor getWallForFacing would have used.
@@ -62,9 +65,9 @@ local function hasAttachSurface(props, square)
     return false
 end
 
---- Brush-like occupancy: stack multiple highs/overlays, hang over furniture, and
---- (with floatingPlace) skip the floor/wall requirement for highs. Skill/tool
---- requirements still apply.
+--- Brush-like occupancy: stack multiple highs/overlays, hang over furniture.
+--- Wall hangings always need a wall/attach surface — never greenlight open air
+--- (that ate posters: forceAllow + WallOverlay with no wall = item gone, nothing shown).
 local function tryAllowLayered(props, character, square, item, forceTypeObject)
     if not props.isMoveable or not square then
         return false
@@ -89,14 +92,8 @@ local function tryAllowLayered(props, character, square, item, forceTypeObject)
 
     local t = props.type
     if t == "WallOverlay" or t == "WindowObject" or t == "WallObject" then
-        -- Vanilla: one overlay per wall, and no second IsHigh. That is exactly
-        -- the red-high / placed-low poster case. Stack freely when we can see
-        -- any wall surface; with floatingPlace, WallObjects may hang without one.
-        if hasAttachSurface(props, square) then
-            -- ok
-        elseif LayeredPlacement.allowFloatingPlace() and (t == "WallObject" or isHighLow) then
-            -- ok — railing / open air / "place anywhere"
-        else
+        -- Stack freely when a wall/attach surface exists. Do not allow mid-air.
+        if not hasAttachSurface(props, square) then
             return false
         end
     else
@@ -500,9 +497,60 @@ local function cheatPickUpFloating(props, character, square, createItem)
     return props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
 end
 
+--- Wall hangings: place ourselves so we never consume the item when vanilla's
+--- WallOverlay path finds no wall (forceAllow + empty attach = disappear).
+--- Still skips the one-overlay / one-IsHigh occupancy re-check.
+local function placeWallDecor(props, character, square, origSpriteName)
+    if not props or not character or not square then
+        return false
+    end
+    if not hasAttachSurface(props, square) then
+        return false
+    end
+
+    -- Multi-sprite large paintings: our canPlace already greened stacking;
+    -- let vanilla place with forceAllow only when a surface exists.
+    if props.isMultiSprite then
+        _placeMoveable(props, character, square, origSpriteName, true)
+        return true
+    end
+
+    local item = props:findInInventory(character, origSpriteName)
+    if not item then
+        return false
+    end
+
+    local wall = getWallObjectForDecor(props, square)
+    if props.type == "WallOverlay" and not wall then
+        -- Flags say "wall" (stairs / odd frames) but getWallForFacing failed —
+        -- spawn a free object like vanilla's N/W overlay path instead of eating
+        -- the item on a no-op AttachExistingAnim.
+        if not forceSpawnDecor(square, props.spriteName, item) then
+            LayeredPlacement.log("wall overlay place aborted: no wall object")
+            return false
+        end
+    else
+        props:placeMoveableInternal(square, item, props.spriteName)
+    end
+
+    local inv = character:getInventory()
+    if inv then
+        inv:Remove(item)
+        if sendRemoveItemFromContainer then
+            sendRemoveItemFromContainer(inv, item)
+        end
+    end
+    if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+        ISMoveableCursor.clearCacheForAllPlayers()
+    end
+    LayeredPlacement.log("wall decor placed @ "
+        .. tostring(square:getX()) .. "," .. tostring(square:getY())
+        .. "," .. tostring(square:getZ()))
+    return true
+end
+
 --- Hanging decor: brush-spawn into place (no canPlace re-check, no spinner path).
---- Wall hangings stay on the vanilla attach path, but forceAllow skips the
---- occupancy re-check so stacked posters/highs actually commit.
+--- Wall hangings use placeWallDecor so stacked highs commit without vanishing.
 function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, forceAllow)
     if isFloatingObjectDecor(self) and square then
         -- Prefer upstairs when the mouse fell through mesh, but still allow an
@@ -527,6 +575,13 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         end
         LayeredPlacement.log("brush place produced 0 parts")
         return false
+    end
+    if LayeredPlacement.isWallDecor(self) and LayeredPlacement.isPlaceHelpEnabled() and square then
+        if placeWallDecor(self, character, square, origSpriteName) then
+            return true
+        end
+        -- No attach surface: fall through without forceAllow so the item is kept.
+        return _placeMoveable(self, character, square, origSpriteName, forceAllow)
     end
     if LayeredPlacement.isPlaceHelpEnabled() and isLayerDecor(self) then
         forceAllow = true
