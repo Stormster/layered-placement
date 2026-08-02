@@ -5,30 +5,12 @@ require "BuildingObjects/ISBuildingObject"
 --- nil when client scripts first load (was crashing on ISMoveableCursor.render).
 local hooked = false
 
-local REACH_DIST = 3
-
 local function withinCatwalkReach(character, square)
-    local charSq = character and (character:getSquare() or character:getCurrentSquare())
-    if not charSq or not square then
-        return false
-    end
-    if charSq:getZ() ~= square:getZ() then
-        return false
-    end
-    local dx = math.abs(charSq:getX() - square:getX())
-    local dy = math.abs(charSq:getY() - square:getY())
-    return math.max(dx, dy) <= REACH_DIST
+    return LayeredPlacement.withinReach(character, square, LayeredPlacement.REACH_DIST)
 end
 
 local function isDecorProps(props)
-    if not props or not props.isMoveable then
-        return false
-    end
-    if props.isHigh or props.isLow then
-        return true
-    end
-    local t = props.type
-    return t == "WallObject" or t == "WallOverlay" or t == "WindowObject"
+    return LayeredPlacement.isReachDecor(props)
 end
 
 local function aimSquare(self)
@@ -64,6 +46,9 @@ local function drawMeshFloorCursor(self, x, y, z)
     if (mode ~= "pickup" and mode ~= "place") or not self.currentMoveProps or not self.currentMoveProps.isMultiSprite then
         return
     end
+    if not LayeredPlacement.isReachDecor(self.currentMoveProps) then
+        return
+    end
     local cursor = self.getFloorCursorSprite and self:getFloorCursorSprite()
     if not cursor then
         return
@@ -96,10 +81,6 @@ local function hookCursor()
         return
     end
     hooked = true
-
-    -- Vanilla draws this cyan circle at the raw mouse Z (often ground under a pillar).
-    -- Our remapped FloorTileCursor is the real aim indicator.
-    ISMoveableCursor.renderFloorHelper = false
 
     local _isValid = ISMoveableCursor.isValid
     local _render = ISMoveableCursor.render
@@ -143,11 +124,14 @@ local function hookCursor()
 
     if _render then
         function ISMoveableCursor:render(x, y, z, square)
-            -- Per-instance flag; class default may still be true on fresh cursors.
-            self.renderFloorHelper = false
-            local cs = aimSquare(self)
-            if cs and (cs:getX() ~= x or cs:getY() ~= y or cs:getZ() ~= z) then
-                x, y, z, square = cs:getX(), cs:getY(), cs:getZ(), cs
+            if LayeredPlacement.allowMeshFloorAim() then
+                -- Vanilla's cyan helper circle sits at the raw mouse Z (often the
+                -- ground under a pillar); the remapped floor cursor is the real aim.
+                self.renderFloorHelper = false
+                local cs = aimSquare(self)
+                if cs and (cs:getX() ~= x or cs:getY() ~= y or cs:getZ() ~= z) then
+                    x, y, z, square = cs:getX(), cs:getY(), cs:getZ(), cs
+                end
             end
             local result = _render(self, x, y, z, square)
             drawMeshFloorCursor(self, x, y, z)
@@ -157,7 +141,7 @@ local function hookCursor()
 
     if _beforeWorldRender then
         function ISMoveableCursor:beforeWorldRender(x, y, z)
-            if self.square and (self.isLeftDown or self.build) then
+            if LayeredPlacement.allowMeshFloorAim() and self.square and (self.isLeftDown or self.build) then
                 return _beforeWorldRender(self, self.square:getX(), self.square:getY(), self.square:getZ())
             end
             return _beforeWorldRender(self, x, y, z)
@@ -167,7 +151,7 @@ local function hookCursor()
     if _create then
         function ISMoveableCursor:create(x, y, z, north, sprite)
             local cs = aimSquare(self)
-            if cs then
+            if LayeredPlacement.allowMeshFloorAim() and cs then
                 return _create(self, cs:getX(), cs:getY(), cs:getZ(), north, sprite)
             end
             return _create(self, x, y, z, north, sprite)
@@ -199,13 +183,12 @@ local function hookCursor()
             return false
         end
         local props = self.currentMoveProps or self.origMoveProps
-        -- Only Object-type floating highs skip walk (string lights). Wall hangings path normally.
-        local floatingObject = LayeredPlacement.allowFloatingPlace()
-            and props
-            and props.isMoveable
-            and (props.isHigh or props.isLow)
-            and (props.type == "Object" or props.type == nil)
-        if floatingObject then
+        local square = getCell() and getCell():getGridSquare(x, y, z) or cs
+        -- Hanging decor you're already standing next to: start the action without
+        -- pathing. Wall hangings and anything further away path normally.
+        if LayeredPlacement.isFloatingDecor(props)
+            and LayeredPlacement.withinReach(self.character, square or cs, LayeredPlacement.CHEAT_REACH)
+        then
             return true
         end
         if not LayeredPlacement.allowCatwalkReach() then
@@ -214,8 +197,7 @@ local function hookCursor()
         if not isDecorProps(props) then
             return false
         end
-        local square = getCell() and getCell():getGridSquare(x, y, z) or cs
-        return walkToCursorTarget(self, square)
+        return walkToCursorTarget(self, square or cs)
     end
 
     -- Remap mouse Z before DoTileBuilding assigns square / renders / tryBuilds.
