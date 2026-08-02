@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.5.5"
+LayeredPlacement.VERSION = "1.6.0"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -89,6 +89,89 @@ function LayeredPlacement.setEnabled(value)
     LayeredPlacement.setOption("floatingPlace", on)
 end
 
+--- Max same-floor distance for the floating-decor helpers. Without a cap the
+--- pathing skip would let you place/pick decor anywhere on your Z level.
+LayeredPlacement.REACH_DIST = 3
+LayeredPlacement.CHEAT_REACH = 4
+
+function LayeredPlacement.chebyshev(squareA, squareB)
+    if not squareA or not squareB then
+        return 999
+    end
+    local dx = math.abs(squareA:getX() - squareB:getX())
+    local dy = math.abs(squareA:getY() - squareB:getY())
+    if dx > dy then
+        return dx
+    end
+    return dy
+end
+
+function LayeredPlacement.withinReach(character, square, dist)
+    local charSq = character and (character:getSquare() or character:getCurrentSquare())
+    if not charSq or not square then
+        return false
+    end
+    if charSq:getZ() ~= square:getZ() then
+        return false
+    end
+    return LayeredPlacement.chebyshev(charSq, square) <= (dist or LayeredPlacement.REACH_DIST)
+end
+
+--- Hanging decor: lamps, chandeliers, canopies, string lights, bunting.
+--- Deliberately narrow. MoveType defaults to "Object" for every moveable without
+--- one, so keying on IsLow too would sweep in ~1900 ordinary furniture tiles
+--- (ovens, washers, tables, fridges) and let them be placed in mid-air.
+function LayeredPlacement.isHangingDecor(props)
+    if not props or not props.isMoveable or not props.isHigh then
+        return false
+    end
+    if props.type ~= "Object" then
+        return false
+    end
+    if props.isTable or props.isTableTop or props.isStackable or props.isWaterCollector then
+        return false
+    end
+    if props.isoType and props.isoType ~= "IsoObject" and props.isoType ~= "IsoLightSwitch" then
+        return false
+    end
+    if props.spriteProps and props.spriteProps:has("container") then
+        return false
+    end
+    return true
+end
+
+function LayeredPlacement.isWallDecor(props)
+    if not props or not props.isMoveable then
+        return false
+    end
+    local t = props.type
+    return t == "WallObject" or t == "WallOverlay" or t == "WindowObject"
+end
+
+--- Everything whose placement rules this mod is allowed to relax.
+--- Wall-attached types still go through the vanilla attach path; only the
+--- "tile is already occupied" and "needs a floor" rules are touched.
+function LayeredPlacement.isPlacementDecor(props)
+    return LayeredPlacement.isHangingDecor(props) or LayeredPlacement.isWallDecor(props)
+end
+
+--- Wider set for the pathing/adjacency helpers only. These never change what
+--- may be placed, just whether you have to walk onto an awkward catwalk tile.
+function LayeredPlacement.isReachDecor(props)
+    if not props or not props.isMoveable then
+        return false
+    end
+    if props.isHigh or props.isLow then
+        return true
+    end
+    return LayeredPlacement.isWallDecor(props)
+end
+
+--- Hanging decor placed on railings/catwalk edges, when that helper is enabled.
+function LayeredPlacement.isFloatingDecor(props)
+    return LayeredPlacement.allowFloatingPlace() and LayeredPlacement.isHangingDecor(props)
+end
+
 function LayeredPlacement.hasPlaceRequirements(props, character)
     if not character or not instanceof(character, "IsoPlayer") then
         return true
@@ -160,16 +243,12 @@ function LayeredPlacement.ensureGridSquare(x, y, z)
             return created
         end
     end
+    -- Only create inside the world bounds; forcing squares outside them can
+    -- attach objects to chunks the game will never save.
     local world = getWorld and getWorld() or nil
-    if world and world.isValidSquare and world:isValidSquare(x, y, z) then
-        local ok, created = pcall(function()
-            return cell:createNewGridSquare(x, y, z, true)
-        end)
-        if ok and created then
-            return created
-        end
+    if world and world.isValidSquare and not world:isValidSquare(x, y, z) then
+        return nil
     end
-    -- Last resort: some catwalk edge coords still place if we force-create.
     local ok, created = pcall(function()
         return cell:createNewGridSquare(x, y, z, true)
     end)
