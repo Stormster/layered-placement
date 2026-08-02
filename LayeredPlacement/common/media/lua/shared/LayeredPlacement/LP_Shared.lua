@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.4.9"
+LayeredPlacement.VERSION = "1.5.0"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -142,22 +142,11 @@ local function pickupAimScore(square)
     return score
 end
 
---- Score a square for place aiming (prefer real floors / catwalk tiles over pillar air).
-local function placeAimScore(square)
-    if not square then
-        return -1
+function LayeredPlacement.ensureGridSquare(x, y, z)
+    local cell = getCell()
+    if not cell or x == nil or y == nil or z == nil then
+        return nil
     end
-    local score = 1
-    if square:getFloor() then
-        score = score + 4
-    end
-    if IsoFlagType and square:has(IsoFlagType.solidfloor) then
-        score = score + 2
-    end
-    return score
-end
-
-local function getOrCreateSquare(cell, x, y, z)
     local sq = cell:getGridSquare(x, y, z)
     if sq then
         return sq
@@ -173,37 +162,64 @@ local function getOrCreateSquare(cell, x, y, z)
     return nil
 end
 
---- When the mouse hits a tall pillar/ground, the reprojected XY may be empty or
---- a bad column tile. Search nearby player-Z squares for a better aim target.
-local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
-    local best, bestScore, bestDist = nil, -1, 999
-    local radius = (mode == "pickup") and 2 or 2
-    for dx = -radius, radius do
-        for dy = -radius, radius do
-            local dist = math.max(math.abs(dx), math.abs(dy))
-            local sq
-            if dist == 0 then
-                sq = getOrCreateSquare(cell, x, y, pz)
-            else
-                sq = cell:getGridSquare(x + dx, y + dy, pz)
-            end
-            if sq then
-                local score
-                if mode == "pickup" then
-                    score = pickupAimScore(sq)
-                else
-                    score = placeAimScore(sq)
-                end
-                if score > bestScore or (score == bestScore and dist < bestDist) then
-                    best, bestScore, bestDist = sq, score, dist
+--- Walk to a same-Z floor tile next to a floating railing/catwalk square.
+--- keepActions=true so an existing path/queue from tryBuild isn't wiped.
+function LayeredPlacement.walkToNearbyFloor(character, square, keepActions)
+    if not character or not square or not luautils or not luautils.walkAdj then
+        return false
+    end
+    local cell = getCell()
+    if not cell then
+        return false
+    end
+    local z = square:getZ()
+    for r = 1, 2 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if not (dx == 0 and dy == 0) then
+                    local sq = cell:getGridSquare(square:getX() + dx, square:getY() + dy, z)
+                    if sq and sq:getFloor() and luautils.walkAdj(character, sq, keepActions ~= false) then
+                        return true
+                    end
                 end
             end
         end
     end
-    -- Pickup with nothing nearby: still snap to exact/nearest existing upstairs tile
-    -- so we don't leave the cursor on the ground under a pillar.
-    if mode == "pickup" and bestScore <= 0 then
-        local exact = getOrCreateSquare(cell, x, y, pz)
+    return false
+end
+
+local function getOrCreateSquare(cell, x, y, z)
+    return LayeredPlacement.ensureGridSquare(x, y, z)
+end
+
+--- When the mouse hits a tall pillar/ground, the reprojected XY may be empty.
+--- Pickup: keep the exact tile if it has decor; only then search neighbors.
+--- Place: stick to the exact aim tile (neighbor floor-snapping stole railing edges).
+local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
+    local exact = getOrCreateSquare(cell, x, y, pz)
+
+    if mode == "pickup" then
+        if pickupAimScore(exact) > 0 then
+            return exact
+        end
+        local best, bestScore, bestDist = nil, 0, 999
+        local radius = 2
+        for dx = -radius, radius do
+            for dy = -radius, radius do
+                if not (dx == 0 and dy == 0) then
+                    local dist = math.max(math.abs(dx), math.abs(dy))
+                    local sq = cell:getGridSquare(x + dx, y + dy, pz)
+                    local score = pickupAimScore(sq)
+                    if score > bestScore or (score == bestScore and score > 0 and dist < bestDist) then
+                        best, bestScore, bestDist = sq, score, dist
+                    end
+                end
+            end
+        end
+        if bestScore > 0 then
+            return best
+        end
+        -- Nothing to pick nearby — still leave the ground; snap upstairs if possible.
         if exact then
             return exact
         end
@@ -219,8 +235,26 @@ local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
                 end
             end
         end
+        return nil
     end
-    return best
+
+    -- place
+    if exact then
+        return exact
+    end
+    for r = 1, 2 do
+        for dx = -r, r do
+            for dy = -r, r do
+                if math.abs(dx) == r or math.abs(dy) == r then
+                    local sq = getOrCreateSquare(cell, x + dx, y + dy, pz)
+                    if sq then
+                        return sq
+                    end
+                end
+            end
+        end
+    end
+    return nil
 end
 
 --- If the mouse fell through mesh to a lower Z while you're upstairs, aim at

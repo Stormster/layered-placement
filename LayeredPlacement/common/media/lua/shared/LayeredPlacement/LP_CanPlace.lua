@@ -117,8 +117,30 @@ end
 
 local _canPlaceMoveable = ISMoveableSpriteProps.canPlaceMoveable
 local _canPlaceMoveableInternal = ISMoveableSpriteProps.canPlaceMoveableInternal
+local _canPickUpMoveable = ISMoveableSpriteProps.canPickUpMoveable
+local _pickUpMoveable = ISMoveableSpriteProps.pickUpMoveable
 local _isWallBetweenParts = ISMoveableSpriteProps.isWallBetweenParts
 local _walkToAndEquip = ISMoveableSpriteProps.walkToAndEquip
+
+local function ensureMultiSpriteSquares(props, square)
+    if not props or not square or not props.isMultiSprite or not props.sprite then
+        return
+    end
+    local spriteGrid = props.sprite:getSpriteGrid()
+    if not spriteGrid then
+        return
+    end
+    local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
+    local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
+    local sZ = square:getZ()
+    for gx = 0, spriteGrid:getWidth() - 1 do
+        for gy = 0, spriteGrid:getHeight() - 1 do
+            if spriteGrid:getSprite(gx, gy) then
+                LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+            end
+        end
+    end
+end
 
 function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)
     local canPlace = _canPlaceMoveableInternal(self, character, square, item, forceTypeObject)
@@ -126,6 +148,75 @@ function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item,
         return canPlace
     end
     return tryAllowLayered(self, character, square, item, forceTypeObject)
+end
+
+--- Multi-sprite pickup needs every grid cell. Floating edge lights sometimes lose a
+--- partner square lookup; ForceSingleItem highs can still be retrieved from the clicked tile.
+function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
+    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
+        ensureMultiSpriteSquares(self, square)
+    end
+    local ok = _canPickUpMoveable(self, character, square, object)
+    if ok or not LayeredPlacement.allowFloatingPlace() then
+        return ok
+    end
+    if not isLayerDecor(self) or not self.isMultiSprite or not self.isForceSingleItem then
+        return ok
+    end
+    return self:canPickUpMoveableInternal(character, square, object, false)
+end
+
+function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, forceAllow)
+    if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
+        ensureMultiSpriteSquares(self, square)
+    end
+    local result = _pickUpMoveable(self, character, square, createItem, forceAllow)
+    if result ~= nil or not LayeredPlacement.allowFloatingPlace() then
+        return result
+    end
+    if not isLayerDecor(self) or not self.isForceSingleItem or not square then
+        return result
+    end
+    -- Grid partner missing: remove whatever is on this tile and grant the single item.
+    local obj, sprInstance = self:findOnSquare(square, self.spriteName)
+    if not obj then
+        return result
+    end
+    if not (forceAllow or character:isMovablesCheat() or ISMoveableDefinitions.cheat
+        or self:canPickUpMoveableInternal(character, square, not sprInstance and obj or nil, false)) then
+        return result
+    end
+    local spriteGrid = self.sprite and self.sprite:getSpriteGrid()
+    if spriteGrid then
+        local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
+        local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
+        local sZ = square:getZ()
+        for gx = 0, spriteGrid:getWidth() - 1 do
+            for gy = 0, spriteGrid:getHeight() - 1 do
+                local partSprite = spriteGrid:getSprite(gx, gy)
+                if partSprite then
+                    local partSq = getCell():getGridSquare(sX + gx, sY + gy, sZ)
+                    local partObj, partSpr = self:findOnSquare(partSq, partSprite:getName())
+                    if partObj then
+                        self:pickUpMoveableInternal(
+                            character, partSq, partObj, partSpr, partSprite:getName(), false, forceAllow
+                        )
+                    end
+                end
+            end
+        end
+        if createItem then
+            local item = self:instanceItem(spriteGrid:getAnchorSprite():getName())
+            if item then
+                character:getInventory():AddItem(item)
+                if sendAddItemToContainer then
+                    sendAddItemToContainer(character:getInventory(), item)
+                end
+            end
+        end
+        return {}
+    end
+    return _pickUpMoveable(self, character, square, createItem, true)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
@@ -145,6 +236,10 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
         if not spriteGrid then
             return false
         end
+
+        -- Floating catwalk edges often lack grid squares for the 2nd light tile.
+        ensureMultiSpriteSquares(self, square)
+
         local sgrid = self:getSpriteGridInfo(square, false)
         if not sgrid then
             return false
@@ -158,8 +253,16 @@ function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)
             return false
         end
 
+        local sX = square:getX() - spriteGrid:getSpriteGridPosX(self.sprite)
+        local sY = square:getY() - spriteGrid:getSpriteGridPosY(self.sprite)
+        local sZ = square:getZ()
         for _, gridMember in ipairs(sgrid) do
-            if not self:canPlaceMoveableInternal(character, gridMember.square, invItem) then
+            local memberSq = gridMember.square
+            if not memberSq and gridMember.x ~= nil and gridMember.y ~= nil then
+                memberSq = LayeredPlacement.ensureGridSquare(sX + gridMember.x, sY + gridMember.y, sZ)
+                gridMember.square = memberSq
+            end
+            if not self:canPlaceMoveableInternal(character, memberSq, invItem) then
                 return false
             end
         end
@@ -207,7 +310,7 @@ local function isCatwalkReachAction(action)
 end
 
 --- When pathing can't reach awkward catwalk/railing tiles, allow Place and Pickup
---- if the player is already next to the tile.
+--- if the player is already next to the tile — or walk to a nearby floor tile first.
 function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSpriteName)
     local ok = _walkToAndEquip(self, character, square, mode, origSpriteName)
     if ok or not LayeredPlacement.allowCatwalkReach() then
@@ -216,10 +319,13 @@ function ISMoveableSpriteProps:walkToAndEquip(character, square, mode, origSprit
     if (mode ~= "place" and mode ~= "pickup") or not isLayerDecor(self) or not character or not square then
         return ok
     end
-    if not withinCatwalkReach(character, square) then
-        return false
+    if withinCatwalkReach(character, square) then
+        return tryEquipModeTool(self, character, mode)
     end
-    return tryEquipModeTool(self, character, mode)
+    if LayeredPlacement.walkToNearbyFloor(character, square, true) then
+        return tryEquipModeTool(self, character, mode)
+    end
+    return false
 end
 
 --- walkToAndEquip can start the action via catwalkReach, but vanilla isValid still

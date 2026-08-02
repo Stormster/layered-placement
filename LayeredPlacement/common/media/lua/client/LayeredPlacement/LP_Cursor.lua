@@ -35,11 +35,11 @@ local function aimSquare(self)
     return self.currentSquare or self.square
 end
 
---- Multi-sprite pickup skips FloorTileCursor and only ghosts real floors.
+--- Multi-sprite cursor skips FloorTileCursor and only ghosts real floors.
 --- Floating railing lights often have no floor, so draw the white square ourselves.
-local function drawPickupFloorCursor(self, x, y, z)
+local function drawMeshFloorCursor(self, x, y, z)
     local mode = ISMoveableCursor.mode[self.player]
-    if mode ~= "pickup" or not self.currentMoveProps or not self.currentMoveProps.isMultiSprite then
+    if (mode ~= "pickup" and mode ~= "place") or not self.currentMoveProps or not self.currentMoveProps.isMultiSprite then
         return
     end
     local cursor = self.getFloorCursorSprite and self:getFloorCursorSprite()
@@ -128,7 +128,7 @@ local function hookCursor()
                 x, y, z, square = cs:getX(), cs:getY(), cs:getZ(), cs
             end
             local result = _render(self, x, y, z, square)
-            drawPickupFloorCursor(self, x, y, z)
+            drawMeshFloorCursor(self, x, y, z)
             return result
         end
     end
@@ -183,7 +183,42 @@ local function hookCursor()
             return false
         end
         local square = getCell() and getCell():getGridSquare(x, y, z) or cs
-        return withinCatwalkReach(self.character, square)
+        if withinCatwalkReach(self.character, square) then
+            return true
+        end
+        return LayeredPlacement.walkToNearbyFloor(self.character, square, true)
+    end
+
+    -- Remap mouse Z before DoTileBuilding assigns square / renders / tryBuilds.
+    if type(DoTileBuilding) == "function" and not LayeredPlacement._doTileBuildingHooked then
+        LayeredPlacement._doTileBuildingHooked = true
+        local _DoTileBuilding = DoTileBuilding
+        function DoTileBuilding(draggingItem, isRender, x, y, z, square)
+            if LayeredPlacement.allowMeshFloorAim()
+                and draggingItem
+                and draggingItem.Type == "ISMoveableCursor"
+                and square
+            then
+                local mode = ISMoveableCursor.mode[draggingItem.player]
+                if mode == "place" or mode == "pickup" then
+                    local char = draggingItem.character
+                    local props = nil
+                    if mode == "place" then
+                        props = draggingItem.currentMoveProps or draggingItem.origMoveProps
+                    end
+                    local target = LayeredPlacement.resolveFloatingSquare(
+                        char, square, props, draggingItem.player, mode
+                    )
+                    if target and target ~= square then
+                        square = target
+                        x = target:getX()
+                        y = target:getY()
+                        z = target:getZ()
+                    end
+                end
+            end
+            return _DoTileBuilding(draggingItem, isRender, x, y, z, square)
+        end
     end
 
     LayeredPlacement.log("cursor floating Z hook ready")
