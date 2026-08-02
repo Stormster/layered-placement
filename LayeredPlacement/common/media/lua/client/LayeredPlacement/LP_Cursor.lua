@@ -5,7 +5,7 @@ require "BuildingObjects/ISBuildingObject"
 --- nil when client scripts first load (was crashing on ISMoveableCursor.render).
 local hooked = false
 
-local REACH_DIST = 2
+local REACH_DIST = 3
 
 local function withinCatwalkReach(character, square)
     local charSq = character and (character:getSquare() or character:getCurrentSquare())
@@ -33,6 +33,24 @@ end
 
 local function aimSquare(self)
     return self.currentSquare or self.square
+end
+
+local function walkToCursorTarget(self, square)
+    if withinCatwalkReach(self.character, square) then
+        return true
+    end
+    if LayeredPlacement.walkToNearbyFloor(self.character, square, true) then
+        return true
+    end
+    local props = self.currentMoveProps or self.origMoveProps
+    if props and props.isMultiSprite and props.getSpriteGridTopLeft and props.getMultiTileSquares and luautils and luautils.walkAdjSquares then
+        local left, top = props:getSpriteGridTopLeft(square:getX(), square:getY())
+        local squares = props:getMultiTileSquares(left, top, square:getZ())
+        if squares and luautils.walkAdjSquares(self.character, squares, true, true) then
+            return true
+        end
+    end
+    return false
 end
 
 --- Multi-sprite cursor skips FloorTileCursor and only ghosts real floors.
@@ -183,10 +201,7 @@ local function hookCursor()
             return false
         end
         local square = getCell() and getCell():getGridSquare(x, y, z) or cs
-        if withinCatwalkReach(self.character, square) then
-            return true
-        end
-        return LayeredPlacement.walkToNearbyFloor(self.character, square, true)
+        return walkToCursorTarget(self, square)
     end
 
     -- Remap mouse Z before DoTileBuilding assigns square / renders / tryBuilds.
