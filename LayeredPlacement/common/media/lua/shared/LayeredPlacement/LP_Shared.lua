@@ -425,8 +425,11 @@ end
 --- the ground tile's XY is wrong under isometric angles (common on catwalks).
 --- Near tall pillars the exact XY often has no upper square; snap to a nearby
 --- player-Z tile (decor for pickup, force-create for place).
---- For high/low place: never fall back to the ground square — that caused a
---- white cursor + spinner with nothing placed under catwalks.
+---
+--- Place: only remap Object-type floating highs (lights). Wall hangings
+--- (posters/paintings) must keep the aimed wall square — lifting them to an
+--- empty upstairs tile greens the cursor then eats the item with nothing shown.
+--- Pickup: still remap any high/low so mesh fallthrough finds upstairs decor.
 --- mode: optional "pickup" / "place" (nil defaults to place-style scoring)
 function LayeredPlacement.resolveFloatingSquare(character, square, props, playerNum, mode)
     if not LayeredPlacement.allowMeshFloorAim() then
@@ -435,8 +438,15 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
     if not square then
         return square
     end
-    if props and not (props.isHigh or props.isLow) then
-        return square
+    local aimMode = mode or "place"
+    if props then
+        if aimMode == "pickup" then
+            if not (props.isHigh or props.isLow) then
+                return square
+            end
+        elseif not LayeredPlacement.isFloatingDecor(props) then
+            return square
+        end
     end
     if not character then
         return square
@@ -470,7 +480,6 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
         end
     end
 
-    local aimMode = mode or "place"
     local atPlayer = findBestSquareAtPlayerZ(cell, x, y, pz, aimMode)
     if atPlayer then
         LayeredPlacement.log(
