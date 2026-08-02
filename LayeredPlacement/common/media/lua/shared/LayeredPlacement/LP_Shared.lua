@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.2"
+LayeredPlacement.VERSION = "1.6.3"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -93,6 +93,8 @@ end
 --- pathing skip would let you place/pick decor anywhere on your Z level.
 LayeredPlacement.REACH_DIST = 3
 LayeredPlacement.CHEAT_REACH = 4
+--- Looking down from a catwalk onto a ground-floor wall is Z-diff 1.
+LayeredPlacement.BRUSH_MAX_Z = 1
 
 function LayeredPlacement.chebyshev(squareA, squareB)
     if not squareA or not squareB then
@@ -106,15 +108,27 @@ function LayeredPlacement.chebyshev(squareA, squareB)
     return dy
 end
 
-function LayeredPlacement.withinReach(character, square, dist)
+function LayeredPlacement.withinReach(character, square, dist, maxZ)
     local charSq = character and (character:getSquare() or character:getCurrentSquare())
     if not charSq or not square then
         return false
     end
-    if charSq:getZ() ~= square:getZ() then
+    local dz = math.abs(charSq:getZ() - square:getZ())
+    if maxZ == nil then
+        if dz ~= 0 then
+            return false
+        end
+    elseif dz > maxZ then
         return false
     end
     return LayeredPlacement.chebyshev(charSq, square) <= (dist or LayeredPlacement.REACH_DIST)
+end
+
+--- Brush-style reach for floating highs: same floor or one level away (catwalk → ground wall).
+function LayeredPlacement.withinBrushReach(character, square)
+    return LayeredPlacement.withinReach(
+        character, square, LayeredPlacement.CHEAT_REACH, LayeredPlacement.BRUSH_MAX_Z
+    )
 end
 
 --- Hanging decor: lamps, chandeliers, canopies, string lights, bunting.
@@ -467,10 +481,7 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
         )
         return atPlayer
     end
-    -- High/low place under mesh: refuse the ground tile so the cursor goes red
-    -- instead of fake-valid + silent fail.
-    if aimMode == "place" and (not props or props.isHigh or props.isLow) then
-        return nil
-    end
+    -- Could not create an upstairs tile — keep the aimed square (may be an
+    -- intentional ground-floor wall place from a catwalk).
     return square
 end
