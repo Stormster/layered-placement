@@ -177,9 +177,14 @@ local function hookCursor()
                 if square and LayeredPlacement.withinBrushReach(self.character, square) then
                     self.square = square
                     self.currentSquare = square
-                    local spriteName = self.origSpriteName or (props and props.spriteName)
+                    -- Place the *current facing* sprite (ghost), not origSpriteName
+                    -- (inventory / unrotated). Otherwise rotation snaps back on MP.
+                    local placeSprite = (props and props.spriteName)
+                        or self.origSpriteName
+                    local origSprite = self.origSpriteName or placeSprite
+                    local cursorFacing = self.cursorFacing or self.joypadFacing
                     if LayeredPlacement.requestFloatingWorldAction(
-                        self.character, square, spriteName, mode, self.origSpriteName
+                        self.character, square, placeSprite, mode, origSprite, cursorFacing
                     ) then
                         self.cursorFacing = nil
                         self.joypadFacing = nil
@@ -187,12 +192,15 @@ local function hookCursor()
                         return
                     end
                     if mode == "place" then
+                        if cursorFacing and props then
+                            props.cursorFacing = cursorFacing
+                        end
                         props:placeMoveableViaCursor(
-                            self.character, square, self.origSpriteName, self
+                            self.character, square, origSprite, self
                         )
                     else
                         props:pickUpMoveableViaCursor(
-                            self.character, square, self.origSpriteName, self
+                            self.character, square, origSprite, self
                         )
                     end
                     self.cursorFacing = nil

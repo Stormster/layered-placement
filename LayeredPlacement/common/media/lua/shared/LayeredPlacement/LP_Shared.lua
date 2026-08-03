@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.9"
+LayeredPlacement.VERSION = "1.6.10"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -42,7 +42,9 @@ function LayeredPlacement.markConstruction(square)
 end
 --- Ask the server to place/pick floating decor (MP clients only).
 --- Returns true when a command was sent (caller should treat as handled).
-function LayeredPlacement.requestFloatingWorldAction(character, square, spriteName, mode, origSpriteName)
+--- spriteName must be the *current facing* sprite (what the ghost shows);
+--- origSpriteName is for inventory lookup.
+function LayeredPlacement.requestFloatingWorldAction(character, square, spriteName, mode, origSpriteName, cursorFacing)
     if LayeredPlacement.canMutateWorld() then
         return false
     end
@@ -59,9 +61,12 @@ function LayeredPlacement.requestFloatingWorldAction(character, square, spriteNa
         z = square:getZ(),
         spriteName = spriteName,
         origSpriteName = origSpriteName or spriteName,
+        cursorFacing = cursorFacing,
     })
     LayeredPlacement.log("client requested " .. cmd .. " @ "
-        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ()))
+        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
+        .. " sprite=" .. tostring(spriteName)
+        .. " face=" .. tostring(cursorFacing))
     return true
 end
 
