@@ -1,6 +1,11 @@
 require "LayeredPlacement/LP_Shared"
 require "Moveables/ISMoveableSpriteProps"
 
+--- High IsoLightSwitch helpers: railing/fence/catwalk lights are hard for vanilla
+--- to target (isWallTo, canSwitchLight needs room power). We treat every IsHigh
+--- lightswitch in reach as interactable, keep them on battery so outdoor placements
+--- still switch after relog, and always expose Turn On/Off in the context menu.
+
 local function propsOf(object)
     local spr = object and object:getSprite()
     return spr and spr:getProperties() or nil
@@ -12,18 +17,6 @@ local function isHighLightSwitch(object)
     end
     local props = propsOf(object)
     return props and props:has("IsHigh") and true or false
-end
-
-local function hasRealWall(light)
-    local spr = light and light:getSprite()
-    if not spr or not light:getSquare() then
-        return false
-    end
-    local mp = ISMoveableSpriteProps.new(spr)
-    if not mp or not mp.facing then
-        return false
-    end
-    return mp:getWallForFacing(light:getSquare(), mp.facing) and true or false
 end
 
 local function chebyshev(playerObj, square)
@@ -39,11 +32,74 @@ local function chebyshev(playerObj, square)
     return math.max(dx, dy)
 end
 
-local function nearbyOrWalk(playerObj, square)
+local function inLightReach(playerObj, square)
+    if not playerObj or not square then
+        return false
+    end
     if chebyshev(playerObj, square) <= 2 then
         return true
     end
+    if square.DistToProper and square:DistToProper(playerObj) < 2.75 then
+        return true
+    end
+    return false
+end
+
+local function nearbyOrWalk(playerObj, square)
+    if inLightReach(playerObj, square) then
+        return true
+    end
     return luautils.walkAdj(playerObj, square) and true or false
+end
+
+--- Outdoor / railing lights have no room electricity. Battery mode keeps
+--- canSwitchLight true and preserves on-state across chunk load / relog.
+-- preparePlacedLight lives in LP_Shared (server + client place paths).
+
+local function refreshBatteryLight(obj)
+    if not obj or not instanceof(obj, "IsoLightSwitch") then
+        return
+    end
+    local md = obj.getModData and obj:getModData()
+    if not (md and md.lpBatteryLight) then
+        return
+    end
+    pcall(function()
+        if obj.setUseBattery then
+            obj:setUseBattery(true)
+        end
+        if obj.setHasBatteryRaw then
+            obj:setHasBatteryRaw(true)
+        end
+        if obj.setPower then
+            obj:setPower(1.0)
+        end
+        if md.lpWantOn and obj.switchLight and not obj:isActivated() then
+            obj:switchLight(true)
+        elseif md.lpWantOn == false and obj.switchLight and obj:isActivated() then
+            obj:switchLight(false)
+        end
+        if obj.transmitModData then
+            obj:transmitModData()
+        end
+    end)
+end
+
+local function rememberWantOn(obj)
+    if not obj or not obj.getModData then
+        return
+    end
+    local md = obj:getModData()
+    if not md then
+        return
+    end
+    md.lpBatteryLight = true
+    if obj.isActivated then
+        md.lpWantOn = obj:isActivated() and true or false
+    end
+    if obj.transmitModData then
+        obj:transmitModData()
+    end
 end
 
 local function forEachWorldObject(worldobjects, fn)
@@ -52,9 +108,8 @@ local function forEachWorldObject(worldobjects, fn)
     end
     if type(worldobjects) == "table" then
         for i = 1, #worldobjects do
-            local obj = worldobjects[i]
-            if obj then
-                fn(obj)
+            if worldobjects[i] then
+                fn(worldobjects[i])
             end
         end
         return
@@ -98,7 +153,6 @@ local function collectHighLightsNear(playerObj, worldobjects)
         end
     end)
 
-    -- Mouse square at the player's floor (mesh floors often pick wrong Z otherwise).
     local mx = (getMouseXScaled and getMouseXScaled()) or getMouseX()
     local my = (getMouseYScaled and getMouseYScaled()) or getMouseY()
     local z = playerObj:getZ()
@@ -115,8 +169,8 @@ local function collectHighLightsNear(playerObj, worldobjects)
     local scan = {}
     for square, _ in pairs(squareSet) do
         local x, y, zz = square:getX(), square:getY(), square:getZ()
-        for dx = -1, 1 do
-            for dy = -1, 1 do
+        for dx = -2, 2 do
+            for dy = -2, 2 do
                 local sq = cell:getGridSquare(x + dx, y + dy, zz)
                 if sq then
                     scan[sq] = true
@@ -131,7 +185,7 @@ local function collectHighLightsNear(playerObj, worldobjects)
         if objects then
             for i = 0, objects:size() - 1 do
                 local obj = objects:get(i)
-                if isHighLightSwitch(obj) and not seen[obj] and chebyshev(playerObj, square) <= 2 then
+                if isHighLightSwitch(obj) and not seen[obj] and inLightReach(playerObj, square) then
                     seen[obj] = true
                     table.insert(lights, obj)
                 end
@@ -147,10 +201,6 @@ local function pickBestLight(playerObj, worldobjects)
     for i = 1, #lights do
         local light = lights[i]
         local d = chebyshev(playerObj, light:getSquare())
-        -- Prefer floating / railing lamps over ordinary wall ones when both exist.
-        if hasRealWall(light) then
-            d = d + 0.1
-        end
         if d < bestDist then
             bestDist = d
             best = light
@@ -159,18 +209,43 @@ local function pickBestLight(playerObj, worldobjects)
     return best
 end
 
-local function contextHasOptionNamed(context, name)
-    if not context or not name or not context.options then
+local function contextHasToggle(context)
+    if not context or not context.options then
         return false
     end
+    local turnOn = getText("ContextMenu_Turn_On")
+    local turnOff = getText("ContextMenu_Turn_Off")
     local n = context.numOptions or 0
     for i = 1, n do
         local opt = context.options[i]
-        if opt and opt.name == name then
+        if opt and (opt.name == turnOn or opt.name == turnOff) then
             return true
         end
+        -- Submenus: option may have subOption numbers via context structure
+    end
+    if context.getSubMenu then
+        -- Fall through — we'll still add a top-level toggle if unsure
     end
     return false
+end
+
+local function addDirectToggle(context, light, player, worldobjects)
+    if not context or not light then
+        return
+    end
+    local label = (light.isActivated and light:isActivated())
+        and getText("ContextMenu_Turn_Off")
+        or getText("ContextMenu_Turn_On")
+    local opt = context:addGetUpOption(
+        label,
+        worldobjects,
+        ISWorldObjectContextMenu.onToggleLight,
+        light,
+        player
+    )
+    if opt then
+        opt.iconTexture = getTexture("Item_LightBulb")
+    end
 end
 
 --- Force the light into fetch BEFORE menu entries are built.
@@ -187,16 +262,16 @@ local function onPreFill(player, context, worldobjects, test)
     if not light then
         return
     end
-    if not fetch.lightSwitch then
-        fetch.lightSwitch = light
-        if ISWorldObjectContextMenuLogic and ISWorldObjectContextMenuLogic.fetch then
-            ISWorldObjectContextMenuLogic.fetch(fetch, light, player, true)
-        end
-        LayeredPlacement.log("prefill light " .. tostring(light:getSprite() and light:getSprite():getName()))
+    refreshBatteryLight(light)
+    fetch.lightSwitch = light
+    if ISWorldObjectContextMenuLogic and ISWorldObjectContextMenuLogic.fetch then
+        ISWorldObjectContextMenuLogic.fetch(fetch, light, player, true)
     end
+    LayeredPlacement.log("prefill light " .. tostring(light:getSprite() and light:getSprite():getName()))
 end
 
---- If vanilla still didn't add the lamp row, add it ourselves.
+--- Always expose Turn On/Off for high lights in reach (vanilla often skips when
+--- canSwitchLight is false outdoors, or isSomethingTo sees a railing).
 local function onFill(player, context, worldobjects, test)
     if not LayeredPlacement.allowLightInteract() or not context then
         return
@@ -206,26 +281,40 @@ local function onFill(player, context, worldobjects, test)
     if not light then
         return
     end
+    refreshBatteryLight(light)
     local fetch = ISWorldObjectContextMenu.fetchVars
     if fetch then
         fetch.lightSwitch = light
-    end
-    local title = light:getTileName()
-    if contextHasOptionNamed(context, title) then
-        return
     end
     if test then
         ISWorldObjectContextMenu.Test = true
         return true
     end
-    ISWorldObjectContextMenu.doLightSwitchOption(false, context, player)
-    LayeredPlacement.log("fill light menu " .. tostring(title))
+
+    local title = light:getTileName()
+    local hasRow = false
+    local n = context.numOptions or 0
+    for i = 1, n do
+        local opt = context.options[i]
+        if opt and opt.name == title then
+            hasRow = true
+            break
+        end
+    end
+    if not hasRow then
+        ISWorldObjectContextMenu.doLightSwitchOption(false, context, player)
+    end
+
+    -- Guarantee a working toggle even when canSwitchLight was false.
+    if not contextHasToggle(context) then
+        addDirectToggle(context, light, player, worldobjects)
+        LayeredPlacement.log("fill direct toggle " .. tostring(title))
+    end
 end
 
 Events.OnPreFillWorldObjectContextMenu.Add(onPreFill)
 Events.OnFillWorldObjectContextMenu.Add(onFill)
 
--- Keep createMenu inject, but always pass a Lua table (Java lists ignore table.insert).
 local _createMenu = ISWorldObjectContextMenu.createMenu
 
 function ISWorldObjectContextMenu.createMenu(player, worldobjects, x, y, test)
@@ -251,21 +340,47 @@ function ISWorldObjectContextMenu.createMenu(player, worldobjects, x, y, test)
     return _createMenu(player, list, x, y, test)
 end
 
-local function isFloatingHighLight(light)
-    return isHighLightSwitch(light) and not hasRealWall(light)
-end
-
 local _onToggleLight = ISWorldObjectContextMenu.onToggleLight
 
+local function ensureBatteryIfNeeded(light)
+    if not light or not instanceof(light, "IsoLightSwitch") then
+        return
+    end
+    local md = light.getModData and light:getModData()
+    if md and md.lpBatteryLight then
+        refreshBatteryLight(light)
+        return
+    end
+    -- Only opt into battery when vanilla cannot switch (no usable room power).
+    local can = true
+    pcall(function()
+        if light.canSwitchLight then
+            can = light:canSwitchLight()
+        end
+    end)
+    if not can then
+        LayeredPlacement.preparePlacedLight(light)
+        refreshBatteryLight(light)
+    end
+end
+
 function ISWorldObjectContextMenu.onToggleLight(worldobjects, light, player)
-    if LayeredPlacement.allowLightInteract() and isFloatingHighLight(light) then
+    if LayeredPlacement.allowLightInteract() and isHighLightSwitch(light) then
         local playerObj = getSpecificPlayer(player)
         if not playerObj or light:getObjectIndex() == -1 then
             return
         end
         local sq = light:getSquare()
         if sq and nearbyOrWalk(playerObj, sq) then
+            ensureBatteryIfNeeded(light)
             ISTimedActionQueue.add(ISToggleLightAction:new(playerObj, light))
+            local md = light:getModData()
+            if md and md.lpBatteryLight then
+                md.lpWantOn = not (light.isActivated and light:isActivated())
+                if light.transmitModData then
+                    light:transmitModData()
+                end
+            end
         end
         return
     end
@@ -275,7 +390,7 @@ end
 local _onLightBulb = ISWorldObjectContextMenu.onLightBulb
 
 function ISWorldObjectContextMenu.onLightBulb(worldobjects, light, player, remove, bulbitem)
-    if LayeredPlacement.allowLightInteract() and isFloatingHighLight(light) then
+    if LayeredPlacement.allowLightInteract() and isHighLightSwitch(light) then
         local playerObj = getSpecificPlayer(player)
         local sq = light:getSquare()
         if not (playerObj and sq and nearbyOrWalk(playerObj, sq)) then
@@ -292,12 +407,13 @@ function ISWorldObjectContextMenu.onLightBulb(worldobjects, light, player, remov
     return _onLightBulb(worldobjects, light, player, remove, bulbitem)
 end
 
+--- Railing / fence between you and a high lamp must not block the menu toggle.
 local _isSomethingTo = ISWorldObjectContextMenu.isSomethingTo
 
 function ISWorldObjectContextMenu.isSomethingTo(item, player)
-    if LayeredPlacement.allowLightInteract() and isFloatingHighLight(item) then
+    if LayeredPlacement.allowLightInteract() and isHighLightSwitch(item) then
         local playerObj = getSpecificPlayer(player)
-        if playerObj and item:getSquare() and chebyshev(playerObj, item:getSquare()) <= 2 then
+        if playerObj and item:getSquare() and inLightReach(playerObj, item:getSquare()) then
             return false
         end
     end
@@ -319,9 +435,18 @@ local function hookClickHandler()
     local _doClickSpecificObject = ISObjectClickHandler.doClickSpecificObject
 
     function ISObjectClickHandler.doClickLightSwitch(object, playerNum, playerObj)
-        if LayeredPlacement.allowLightInteract() and isFloatingHighLight(object) then
-            if object:getSquare() and object:getSquare():DistToProper(playerObj) < 2.5 then
+        if LayeredPlacement.allowLightInteract() and isHighLightSwitch(object) then
+            local sq = object:getSquare()
+            if sq and inLightReach(playerObj, sq) then
+                ensureBatteryIfNeeded(object)
                 ISTimedActionQueue.addGetUpAndThen(playerObj, ISToggleLightAction:new(playerObj, object))
+                local md = object:getModData()
+                if md and md.lpBatteryLight then
+                    md.lpWantOn = not (object.isActivated and object:isActivated())
+                    if object.transmitModData then
+                        object:transmitModData()
+                    end
+                end
                 return true
             end
             return false
@@ -331,21 +456,30 @@ local function hookClickHandler()
 
     if _doClickSpecificObject then
         function ISObjectClickHandler.doClickSpecificObject(object, playerNum, playerObj)
-            if LayeredPlacement.allowLightInteract() and object and not instanceof(object, "IsoLightSwitch") then
+            if LayeredPlacement.allowLightInteract() and object then
+                -- Prefer toggling a nearby high light over interacting with the
+                -- railing/fence/mesh the click actually hit.
                 local light = pickBestLight(playerObj, { object })
-                if light and isFloatingHighLight(light) and object:getSquare() and light:getSquare() then
-                    local sameOrTouching = chebyshev(playerObj, light:getSquare()) <= 2
-                        and math.abs(object:getSquare():getX() - light:getSquare():getX()) <= 1
-                        and math.abs(object:getSquare():getY() - light:getSquare():getY()) <= 1
-                        and object:getSquare():getZ() == light:getSquare():getZ()
-                    if sameOrTouching and (object:getContainer() == nil)
-                        and not instanceof(object, "IsoDoor")
-                        and not instanceof(object, "IsoWindow")
+                if light and light ~= object and inLightReach(playerObj, light:getSquare()) then
+                    local osq = object:getSquare()
+                    local lsq = light:getSquare()
+                    if osq and lsq and osq:getZ() == lsq:getZ()
+                        and math.abs(osq:getX() - lsq:getX()) <= 2
+                        and math.abs(osq:getY() - lsq:getY()) <= 2
                     then
-                        -- Only steal the click from non-interactive props (rails, etc.).
+                        local steal = instanceof(object, "IsoLightSwitch")
+                            or (object.getContainer and object:getContainer() == nil
+                                and not instanceof(object, "IsoDoor")
+                                and not instanceof(object, "IsoWindow")
+                                and not instanceof(object, "IsoThumpable"))
                         local name = object:getSprite() and object:getSprite():getName() or ""
                         local hoppable = object.isHoppable and object:isHoppable()
-                        if hoppable or string.find(name, "rail", 1, true) or string.find(name, "fence", 1, true) then
+                        if steal or hoppable
+                            or string.find(name, "rail", 1, true)
+                            or string.find(name, "fence", 1, true)
+                            or string.find(name, "mesh", 1, true)
+                            or string.find(name, "catwalk", 1, true)
+                        then
                             return ISObjectClickHandler.doClickLightSwitch(light, playerNum, playerObj)
                         end
                     end
@@ -358,7 +492,48 @@ local function hookClickHandler()
     LayeredPlacement.log("light click hook ready")
 end
 
+--- After chunk load, re-apply battery power and desired on-state only for lights
+--- we already marked (placed via our floating path or opted in when room power
+--- could not switch them). Do not convert ordinary wall lamps.
+local function onLoadSquare(square)
+    if not square or not square.getObjects then
+        return
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return
+    end
+    for i = 0, objects:size() - 1 do
+        local obj = objects:get(i)
+        if isHighLightSwitch(obj) then
+            local md = obj.getModData and obj:getModData()
+            if md and md.lpBatteryLight then
+                refreshBatteryLight(obj)
+            end
+        end
+    end
+end
+
 Events.OnGameBoot.Add(hookClickHandler)
 Events.OnGameStart.Add(hookClickHandler)
+Events.LoadGridsquare.Add(onLoadSquare)
+
+-- After toggle completes, keep battery topped only for lights already on our
+-- battery path (don't convert normal room-powered wall lamps).
+local _toggleComplete = ISToggleLightAction.complete
+function ISToggleLightAction:complete()
+    local result = _toggleComplete(self)
+    if self.object and isHighLightSwitch(self.object) then
+        local md = self.object.getModData and self.object:getModData()
+        if md and md.lpBatteryLight then
+            LayeredPlacement.preparePlacedLight(self.object)
+            rememberWantOn(self.object)
+            refreshBatteryLight(self.object)
+        else
+            rememberWantOn(self.object)
+        end
+    end
+    return result
+end
 
 LayeredPlacement.log("light interact hooks ready")

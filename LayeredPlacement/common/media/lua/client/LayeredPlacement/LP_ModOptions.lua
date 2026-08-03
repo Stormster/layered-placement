@@ -4,27 +4,27 @@ local OPTIONS = {
     {
         id = "layeredPlace",
         label = "Lights over furniture & stacked decor",
-        tooltip = "Stack posters and wall decor (high + low on the same wall), place ceiling lights over furniture, and keep multiple wall hangings together. Floor furniture stays normal.",
+        tooltip = "Stack posters and wall decor on the same wall, and place ceiling lights over furniture. Does not enable railing/mid-air placement (use Place on railings for that). Floor furniture stays normal.",
     },
     {
         id = "floatingPlace",
         label = "Place on railings & catwalks",
-        tooltip = "Allow hanging decor and outdoor/wall lamps on railings, posts, and catwalk edges without a solid wall.",
+        tooltip = "Allow hanging Object-type highs (string lights, canopies, etc.) on railings, posts, and catwalk edges without a solid wall or floor. Independent of stacking.",
     },
     {
         id = "meshFloorAim",
         label = "Aim at your floor through mesh",
-        tooltip = "When you're upstairs and Place/Pickup falls through grated floors to the ground, aim at your floor instead.",
+        tooltip = "When you're upstairs and Place/Pickup falls through grated floors to the ground, aim at your floor instead. Independent of the place helpers.",
     },
     {
         id = "catwalkReach",
         label = "Easier reach on catwalks",
-        tooltip = "Let you finish Place and Pickup when you're already next to a catwalk/railing tile but normal pathing to it fails.",
+        tooltip = "Finish Place/Pickup when you're already next to a catwalk/railing tile but normal pathing fails. Railing floating place still works without this; this helps wall hangings and other highs.",
     },
     {
         id = "lightInteract",
         label = "Easier railing light controls",
-        tooltip = "Make turn on/off and right-click menus work better for lamps on railings (so the rail doesn't eat every click).",
+        tooltip = "Make turn on/off and right-click menus work better for lamps on railings (so the rail doesn't eat every click). Independent of placement options.",
     },
 }
 
