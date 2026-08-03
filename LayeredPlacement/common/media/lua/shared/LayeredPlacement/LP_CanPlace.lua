@@ -390,8 +390,8 @@ local function collectMultiPartItems(props, character, members, spriteGrid)
 end
 
 local function cheatPlaceFloating(props, character, square, origSpriteName)
-    -- Pure MP clients must not spawn here — use the timed-action path so the
-    -- server complete() persists the objects. Brush create falls through to that.
+    -- Pure MP clients must not spawn here — the cursor sends placeFloating to
+    -- the server instead (timed actions often never start on fence/rail tiles).
     if not LayeredPlacement.canMutateWorld() then
         return false
     end

@@ -156,9 +156,10 @@ local function hookCursor()
                 x, y, z = cs:getX(), cs:getY(), cs:getZ()
             end
 
-            -- Brush-style: floating highs place/pick instantly on SP / listen host.
-            -- Pure MP clients must use the timed-action path so server complete()
-            -- creates + saves the objects (client AddSpecialObject vanishes on rejoin).
+            -- Brush-style floating highs: SP/listen-host place locally (authoritative).
+            -- Pure MP clients send a server command — timed actions often never
+            -- start on fence/railing tiles (walkTo/canReach), and client spawns
+            -- do not persist across rejoin.
             local mode = ISMoveableCursor.mode[self.player]
             local props = self.currentMoveProps or self.origMoveProps
             if (mode == "place" or mode == "pickup")
@@ -174,8 +175,16 @@ local function hookCursor()
                 end
                 local square = (getCell() and getCell():getGridSquare(x, y, z)) or cs
                 if square and LayeredPlacement.withinBrushReach(self.character, square) then
-                    if not LayeredPlacement.canMutateWorld() then
-                        return _create(self, x, y, z, north, sprite)
+                    self.square = square
+                    self.currentSquare = square
+                    local spriteName = self.origSpriteName or (props and props.spriteName)
+                    if LayeredPlacement.requestFloatingWorldAction(
+                        self.character, square, spriteName, mode, self.origSpriteName
+                    ) then
+                        self.cursorFacing = nil
+                        self.joypadFacing = nil
+                        self.objectListCache = nil
+                        return
                     end
                     if mode == "place" then
                         props:placeMoveableViaCursor(

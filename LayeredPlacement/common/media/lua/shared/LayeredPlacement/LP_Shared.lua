@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.8"
+LayeredPlacement.VERSION = "1.6.9"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -40,6 +40,31 @@ function LayeredPlacement.markConstruction(square)
         buildUtil.setHaveConstruction(square, true)
     end
 end
+--- Ask the server to place/pick floating decor (MP clients only).
+--- Returns true when a command was sent (caller should treat as handled).
+function LayeredPlacement.requestFloatingWorldAction(character, square, spriteName, mode, origSpriteName)
+    if LayeredPlacement.canMutateWorld() then
+        return false
+    end
+    if not character or not square or not spriteName then
+        return false
+    end
+    if not sendClientCommand then
+        return false
+    end
+    local cmd = (mode == "pickup") and "pickUpFloating" or "placeFloating"
+    sendClientCommand(character, "LayeredPlacement", cmd, {
+        x = square:getX(),
+        y = square:getY(),
+        z = square:getZ(),
+        spriteName = spriteName,
+        origSpriteName = origSpriteName or spriteName,
+    })
+    LayeredPlacement.log("client requested " .. cmd .. " @ "
+        .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ()))
+    return true
+end
+
 local function flag(name)
     local opts = LayeredPlacement.options
     if not opts then
