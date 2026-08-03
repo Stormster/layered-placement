@@ -314,7 +314,9 @@ local function forceSpawnDecor(square, spriteName, item)
         -- Apply and transmit battery state only after the light has a world
         -- object index; pre-add transmission is discarded in multiplayer.
         if obj and instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
-            LayeredPlacement.preparePlacedLight(obj)
+            -- Newly placed hanging lights are visibly lit by default; keep the
+            -- internal activation state and context-menu label consistent.
+            LayeredPlacement.preparePlacedLight(obj, true)
         end
         if isServer() and obj.transmitCompleteItemToClients then
             obj:transmitCompleteItemToClients()
