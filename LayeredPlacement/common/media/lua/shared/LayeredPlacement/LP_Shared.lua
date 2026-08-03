@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.10"
+LayeredPlacement.VERSION = "1.6.12"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -96,6 +96,39 @@ end
 
 function LayeredPlacement.allowLightInteract()
     return flag("lightInteract")
+end
+
+--- IsoLightSwitch tiles placed via our floating path often have no usable room
+--- power (open warehouse / catwalk / mesh floor). Battery mode keeps them
+--- switchable and preserves on-state across relog.
+function LayeredPlacement.preparePlacedLight(obj)
+    if not obj or not instanceof(obj, "IsoLightSwitch") then
+        return
+    end
+    pcall(function()
+        if obj.addLightSourceFromSprite then
+            obj:addLightSourceFromSprite()
+        end
+        if obj.setUseBattery then
+            obj:setUseBattery(true)
+        end
+        if obj.setHasBatteryRaw then
+            obj:setHasBatteryRaw(true)
+        end
+        if obj.setPower then
+            obj:setPower(1.0)
+        end
+        local md = obj:getModData()
+        if md then
+            md.lpBatteryLight = true
+            if obj.isActivated and obj:isActivated() then
+                md.lpWantOn = true
+            end
+        end
+        if obj.transmitModData then
+            obj:transmitModData()
+        end
+    end)
 end
 
 --- Any placement helper that changes what Place will accept.
