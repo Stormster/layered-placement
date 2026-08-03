@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.13"
+LayeredPlacement.VERSION = "1.6.14"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -133,10 +133,24 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         if wantOn == nil and md then
             wantOn = md.lpWantOn
         end
-        if wantOn ~= nil and obj.isActivated and obj.toggle
+        if wantOn ~= nil and obj.isActivated
             and obj:isActivated() ~= (wantOn and true or false)
         then
-            obj:toggle()
+            -- toggle() follows room-electricity rules and can turn an outdoor
+            -- light off but refuse to turn it back on. The three-argument
+            -- setActive explicitly ignores that switch check.
+            local applied = false
+            if obj.setActive then
+                pcall(function()
+                    obj:setActive(wantOn and true or false, false, true)
+                end)
+                applied = obj:isActivated() == (wantOn and true or false)
+            end
+            if not applied and obj.switchLight then
+                obj:switchLight(wantOn and true or false)
+            elseif not applied and obj.toggle then
+                obj:toggle()
+            end
         end
         -- toggle() may consume/update battery state; top it back up afterward.
         if obj.setUseBattery then
