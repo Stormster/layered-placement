@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.14"
+LayeredPlacement.VERSION = "1.6.15"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -106,9 +106,6 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         return false
     end
     local ok, err = pcall(function()
-        if obj.addLightSourceFromSprite then
-            obj:addLightSourceFromSprite()
-        end
         if obj.setUseBattery then
             obj:setUseBattery(true)
         end
@@ -168,6 +165,15 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         local square = obj:getSquare()
         local inWorld = square and obj:getObjectIndex() ~= -1
         if inWorld then
+            -- IsoLightSwitch has dedicated packets for battery/bulb settings
+            -- and activation. transmitModData alone leaves clients showing
+            -- "Turn on" against stale state, even when the server is lit.
+            if obj.syncCustomizedSettings then
+                obj:syncCustomizedSettings(nil)
+            end
+            if obj.syncIsoObject then
+                obj:syncIsoObject(false, 0, nil)
+            end
             if obj.transmitModData then
                 obj:transmitModData()
             end
