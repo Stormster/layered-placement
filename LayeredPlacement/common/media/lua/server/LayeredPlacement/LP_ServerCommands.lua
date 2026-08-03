@@ -30,6 +30,10 @@ local function propsFromArgs(args)
     if not props or not props.isMoveable then
         return nil
     end
+    -- Restore the player's chosen rotation (face sprite and/or cursorFacing).
+    if args.cursorFacing then
+        props.cursorFacing = args.cursorFacing
+    end
     return props
 end
 
@@ -51,12 +55,15 @@ local function onPlaceFloating(player, args)
         LayeredPlacement.log("server placeFloating: out of reach")
         return
     end
+    -- origSpriteName = inventory item; spriteName/props = rotated face being placed.
     local orig = args.origSpriteName or args.spriteName
     local ok = props:placeMoveable(player, square, orig)
     if ok then
         LayeredPlacement.markConstruction(square)
         LayeredPlacement.log("server placeFloating ok @ "
-            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
+            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z)
+            .. " sprite=" .. tostring(args.spriteName)
+            .. " face=" .. tostring(args.cursorFacing))
     else
         LayeredPlacement.log("server placeFloating failed")
     end
