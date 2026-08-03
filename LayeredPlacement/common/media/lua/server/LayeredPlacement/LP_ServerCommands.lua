@@ -96,6 +96,58 @@ local function onPickUpFloating(player, args)
         .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
 end
 
+local function lightFromArgs(square, args)
+    if not square then
+        return nil
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return nil
+    end
+    local index = tonumber(args and args.objectIndex)
+    if index and index >= 0 and index < objects:size() then
+        local obj = objects:get(index)
+        if obj and instanceof(obj, "IsoLightSwitch") then
+            return obj
+        end
+    end
+    local spriteName = args and args.spriteName
+    for i = 0, objects:size() - 1 do
+        local obj = objects:get(i)
+        if obj and instanceof(obj, "IsoLightSwitch") then
+            local objSprite = obj:getSprite()
+            if not spriteName or (objSprite and objSprite:getName() == spriteName) then
+                return obj
+            end
+        end
+    end
+    return nil
+end
+
+--- Dedicated-server authority for high/floating light interaction. The vanilla
+--- client timed action toggles the light but does not persist our desired state
+--- on the server, which made lights revert after a relog.
+local function onSetLightState(player, args)
+    if not player or not instanceof(player, "IsoPlayer") then
+        return
+    end
+    local square = squareFromArgs(args)
+    if not square or not LayeredPlacement.withinBrushReach(player, square) then
+        LayeredPlacement.log("server setLightState: bad square/out of reach")
+        return
+    end
+    local light = lightFromArgs(square, args)
+    if not light then
+        LayeredPlacement.log("server setLightState: light not found")
+        return
+    end
+    local desired = args.desired and true or false
+    if LayeredPlacement.preparePlacedLight(light, desired) then
+        LayeredPlacement.log("server setLightState=" .. tostring(desired) .. " @ "
+            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
+    end
+end
+
 local function onClientCommand(module, command, player, args)
     if module ~= MODULE then
         return
@@ -104,8 +156,33 @@ local function onClientCommand(module, command, player, args)
         onPlaceFloating(player, args)
     elseif command == "pickUpFloating" then
         onPickUpFloating(player, args)
+    elseif command == "setLightState" then
+        onSetLightState(player, args)
     end
 end
 
 Events.OnClientCommand.Add(onClientCommand)
+
+--- Restore marked floating lights when the authoritative world square loads.
+--- Client-only restoration cannot make the state survive a server restart.
+local function onLoadSquare(square)
+    if not square or not square.getObjects then
+        return
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return
+    end
+    for i = 0, objects:size() - 1 do
+        local obj = objects:get(i)
+        if obj and instanceof(obj, "IsoLightSwitch") and obj.getModData then
+            local md = obj:getModData()
+            if md and md.lpBatteryLight then
+                LayeredPlacement.preparePlacedLight(obj, md.lpWantOn)
+            end
+        end
+    end
+end
+
+Events.LoadGridsquare.Add(onLoadSquare)
 LayeredPlacement.log("server commands ready")

@@ -298,11 +298,6 @@ local function forceSpawnDecor(square, spriteName, item)
             if item and obj.getCustomSettingsFromItem then
                 obj:getCustomSettingsFromItem(item)
             end
-            -- Outdoor / railing lights have no room power; battery mode keeps
-            -- them switchable and lit across chunk load / relog.
-            if LayeredPlacement.preparePlacedLight then
-                LayeredPlacement.preparePlacedLight(obj)
-            end
         else
             -- Match vanilla N/W WallOverlay place: IsoObject from IsoSprite.
             obj = IsoObject.new(getCell(), square, spr)
@@ -316,6 +311,11 @@ local function forceSpawnDecor(square, spriteName, item)
             end
         end
         square:AddSpecialObject(obj)
+        -- Apply and transmit battery state only after the light has a world
+        -- object index; pre-add transmission is discarded in multiplayer.
+        if obj and instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
+            LayeredPlacement.preparePlacedLight(obj)
+        end
         if isServer() and obj.transmitCompleteItemToClients then
             obj:transmitCompleteItemToClients()
         end
