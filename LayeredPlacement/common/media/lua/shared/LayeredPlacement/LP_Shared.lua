@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.12"
+LayeredPlacement.VERSION = "1.6.13"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -98,14 +98,14 @@ function LayeredPlacement.allowLightInteract()
     return flag("lightInteract")
 end
 
---- IsoLightSwitch tiles placed via our floating path often have no usable room
---- power (open warehouse / catwalk / mesh floor). Battery mode keeps them
---- switchable and preserves on-state across relog.
-function LayeredPlacement.preparePlacedLight(obj)
+--- Apply battery power and an optional desired state to a floating light.
+--- This must run authoritatively (server in MP) so both the battery fields and
+--- lpWantOn are serialized with the world object.
+function LayeredPlacement.preparePlacedLight(obj, desired)
     if not obj or not instanceof(obj, "IsoLightSwitch") then
-        return
+        return false
     end
-    pcall(function()
+    local ok, err = pcall(function()
         if obj.addLightSourceFromSprite then
             obj:addLightSourceFromSprite()
         end
@@ -121,14 +121,73 @@ function LayeredPlacement.preparePlacedLight(obj)
         local md = obj:getModData()
         if md then
             md.lpBatteryLight = true
-            if obj.isActivated and obj:isActivated() then
-                md.lpWantOn = true
+            if desired == nil then
+                if md.lpWantOn == nil and obj.isActivated then
+                    md.lpWantOn = obj:isActivated() and true or false
+                end
+            else
+                md.lpWantOn = desired and true or false
             end
         end
-        if obj.transmitModData then
-            obj:transmitModData()
+        local wantOn = desired
+        if wantOn == nil and md then
+            wantOn = md.lpWantOn
+        end
+        if wantOn ~= nil and obj.isActivated and obj.toggle
+            and obj:isActivated() ~= (wantOn and true or false)
+        then
+            obj:toggle()
+        end
+        -- toggle() may consume/update battery state; top it back up afterward.
+        if obj.setUseBattery then
+            obj:setUseBattery(true)
+        end
+        if obj.setHasBatteryRaw then
+            obj:setHasBatteryRaw(true)
+        end
+        if obj.setPower then
+            obj:setPower(1.0)
+        end
+        if md then
+            md.lpWantOn = obj.isActivated and obj:isActivated() or (wantOn and true or false)
+        end
+        local square = obj:getSquare()
+        local inWorld = square and obj:getObjectIndex() ~= -1
+        if inWorld then
+            if obj.transmitModData then
+                obj:transmitModData()
+            end
+            LayeredPlacement.markConstruction(square)
         end
     end)
+    if not ok then
+        LayeredPlacement.log("preparePlacedLight failed: " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+--- Toggle immediately in SP/listen-host, or ask the dedicated server to do it.
+function LayeredPlacement.requestLightState(character, obj, desired)
+    if not character or not obj or not obj:getSquare() then
+        return false
+    end
+    if LayeredPlacement.canMutateWorld() then
+        return LayeredPlacement.preparePlacedLight(obj, desired)
+    end
+    if not sendClientCommand then
+        return false
+    end
+    local square = obj:getSquare()
+    sendClientCommand(character, "LayeredPlacement", "setLightState", {
+        x = square:getX(),
+        y = square:getY(),
+        z = square:getZ(),
+        objectIndex = obj:getObjectIndex(),
+        spriteName = obj:getSprite() and obj:getSprite():getName() or nil,
+        desired = desired and true or false,
+    })
+    return true
 end
 
 --- Any placement helper that changes what Place will accept.

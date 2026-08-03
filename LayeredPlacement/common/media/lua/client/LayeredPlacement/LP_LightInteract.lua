@@ -15,6 +15,10 @@ local function isHighLightSwitch(object)
     if not object or not instanceof(object, "IsoLightSwitch") then
         return false
     end
+    local md = object.getModData and object:getModData()
+    if md and md.lpBatteryLight then
+        return true
+    end
     local props = propsOf(object)
     return props and props:has("IsHigh") and true or false
 end
@@ -33,16 +37,7 @@ local function chebyshev(playerObj, square)
 end
 
 local function inLightReach(playerObj, square)
-    if not playerObj or not square then
-        return false
-    end
-    if chebyshev(playerObj, square) <= 2 then
-        return true
-    end
-    if square.DistToProper and square:DistToProper(playerObj) < 2.75 then
-        return true
-    end
-    return false
+    return LayeredPlacement.withinBrushReach(playerObj, square)
 end
 
 local function nearbyOrWalk(playerObj, square)
@@ -64,41 +59,10 @@ local function refreshBatteryLight(obj)
     if not (md and md.lpBatteryLight) then
         return
     end
-    pcall(function()
-        if obj.setUseBattery then
-            obj:setUseBattery(true)
-        end
-        if obj.setHasBatteryRaw then
-            obj:setHasBatteryRaw(true)
-        end
-        if obj.setPower then
-            obj:setPower(1.0)
-        end
-        if md.lpWantOn and obj.switchLight and not obj:isActivated() then
-            obj:switchLight(true)
-        elseif md.lpWantOn == false and obj.switchLight and obj:isActivated() then
-            obj:switchLight(false)
-        end
-        if obj.transmitModData then
-            obj:transmitModData()
-        end
-    end)
-end
-
-local function rememberWantOn(obj)
-    if not obj or not obj.getModData then
-        return
-    end
-    local md = obj:getModData()
-    if not md then
-        return
-    end
-    md.lpBatteryLight = true
-    if obj.isActivated then
-        md.lpWantOn = obj:isActivated() and true or false
-    end
-    if obj.transmitModData then
-        obj:transmitModData()
+    -- Dedicated servers restore and synchronize these lights authoritatively.
+    -- Avoid a client-only ghost toggle that gets overwritten on relog.
+    if LayeredPlacement.canMutateWorld() then
+        LayeredPlacement.preparePlacedLight(obj, md.lpWantOn)
     end
 end
 
@@ -169,8 +133,8 @@ local function collectHighLightsNear(playerObj, worldobjects)
     local scan = {}
     for square, _ in pairs(squareSet) do
         local x, y, zz = square:getX(), square:getY(), square:getZ()
-        for dx = -2, 2 do
-            for dy = -2, 2 do
+        for dx = -LayeredPlacement.CHEAT_REACH, LayeredPlacement.CHEAT_REACH do
+            for dy = -LayeredPlacement.CHEAT_REACH, LayeredPlacement.CHEAT_REACH do
                 local sq = cell:getGridSquare(x + dx, y + dy, zz)
                 if sq then
                     scan[sq] = true
@@ -342,46 +306,21 @@ end
 
 local _onToggleLight = ISWorldObjectContextMenu.onToggleLight
 
-local function ensureBatteryIfNeeded(light)
-    if not light or not instanceof(light, "IsoLightSwitch") then
-        return
+local function toggleHighLight(playerObj, light)
+    if not playerObj or not light or light:getObjectIndex() == -1 then
+        return false
     end
-    local md = light.getModData and light:getModData()
-    if md and md.lpBatteryLight then
-        refreshBatteryLight(light)
-        return
+    if not inLightReach(playerObj, light:getSquare()) then
+        return false
     end
-    -- Only opt into battery when vanilla cannot switch (no usable room power).
-    local can = true
-    pcall(function()
-        if light.canSwitchLight then
-            can = light:canSwitchLight()
-        end
-    end)
-    if not can then
-        LayeredPlacement.preparePlacedLight(light)
-        refreshBatteryLight(light)
-    end
+    local desired = not (light.isActivated and light:isActivated())
+    return LayeredPlacement.requestLightState(playerObj, light, desired)
 end
 
 function ISWorldObjectContextMenu.onToggleLight(worldobjects, light, player)
     if LayeredPlacement.allowLightInteract() and isHighLightSwitch(light) then
         local playerObj = getSpecificPlayer(player)
-        if not playerObj or light:getObjectIndex() == -1 then
-            return
-        end
-        local sq = light:getSquare()
-        if sq and nearbyOrWalk(playerObj, sq) then
-            ensureBatteryIfNeeded(light)
-            ISTimedActionQueue.add(ISToggleLightAction:new(playerObj, light))
-            local md = light:getModData()
-            if md and md.lpBatteryLight then
-                md.lpWantOn = not (light.isActivated and light:isActivated())
-                if light.transmitModData then
-                    light:transmitModData()
-                end
-            end
-        end
+        toggleHighLight(playerObj, light)
         return
     end
     return _onToggleLight(worldobjects, light, player)
@@ -436,20 +375,7 @@ local function hookClickHandler()
 
     function ISObjectClickHandler.doClickLightSwitch(object, playerNum, playerObj)
         if LayeredPlacement.allowLightInteract() and isHighLightSwitch(object) then
-            local sq = object:getSquare()
-            if sq and inLightReach(playerObj, sq) then
-                ensureBatteryIfNeeded(object)
-                ISTimedActionQueue.addGetUpAndThen(playerObj, ISToggleLightAction:new(playerObj, object))
-                local md = object:getModData()
-                if md and md.lpBatteryLight then
-                    md.lpWantOn = not (object.isActivated and object:isActivated())
-                    if object.transmitModData then
-                        object:transmitModData()
-                    end
-                end
-                return true
-            end
-            return false
+            return toggleHighLight(playerObj, object)
         end
         return _doClickLightSwitch(object, playerNum, playerObj)
     end
@@ -518,20 +444,16 @@ Events.OnGameBoot.Add(hookClickHandler)
 Events.OnGameStart.Add(hookClickHandler)
 Events.LoadGridsquare.Add(onLoadSquare)
 
--- After toggle completes, keep battery topped only for lights already on our
--- battery path (don't convert normal room-powered wall lamps).
+-- If another mod or vanilla queues the action directly, still persist the
+-- resulting state through our authoritative path.
 local _toggleComplete = ISToggleLightAction.complete
 function ISToggleLightAction:complete()
     local result = _toggleComplete(self)
-    if self.object and isHighLightSwitch(self.object) then
-        local md = self.object.getModData and self.object:getModData()
-        if md and md.lpBatteryLight then
-            LayeredPlacement.preparePlacedLight(self.object)
-            rememberWantOn(self.object)
-            refreshBatteryLight(self.object)
-        else
-            rememberWantOn(self.object)
-        end
+    if LayeredPlacement.allowLightInteract()
+        and self.character and self.object and isHighLightSwitch(self.object)
+    then
+        local desired = self.object.isActivated and self.object:isActivated() or false
+        LayeredPlacement.requestLightState(self.character, self.object, desired)
     end
     return result
 end
