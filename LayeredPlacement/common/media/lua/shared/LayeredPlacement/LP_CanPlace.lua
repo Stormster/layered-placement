@@ -274,8 +274,12 @@ local function removePlacedInventoryItem(character, item, container)
 end
 
 --- Brush/cheat spawn: bypass vanilla placeMoveableInternal quirks on empty air tiles.
+--- Never runs on a pure MP client — local AddSpecialObject does not persist.
 local function forceSpawnDecor(square, spriteName, item)
     if not square or not spriteName then
+        return false
+    end
+    if not LayeredPlacement.canMutateWorld() then
         return false
     end
     local spr = getSprite(spriteName)
@@ -308,8 +312,6 @@ local function forceSpawnDecor(square, spriteName, item)
         square:AddSpecialObject(obj)
         if isServer() and obj.transmitCompleteItemToClients then
             obj:transmitCompleteItemToClients()
-        elseif isClient() and obj.transmitCompleteItemToServer then
-            obj:transmitCompleteItemToServer()
         end
         if square.RecalcProperties then
             square:RecalcProperties()
@@ -317,6 +319,7 @@ local function forceSpawnDecor(square, spriteName, item)
         if square.RecalcAllWithNeighbours then
             square:RecalcAllWithNeighbours(true)
         end
+        LayeredPlacement.markConstruction(square)
         triggerEvent("OnObjectAdded", obj)
     end)
     if not ok then
@@ -348,16 +351,25 @@ local function countSprite(square, spriteName)
 end
 
 --- Brush spawn: direct object create first (admin-brush style), vanilla as backup.
+--- Skips entirely on pure MP clients so we never create non-persisted ghosts.
 local function placePart(props, square, item, spriteName)
+    if not LayeredPlacement.canMutateWorld() then
+        return false
+    end
     local before = countSprite(square, spriteName)
     forceSpawnDecor(square, spriteName, item)
     if countSprite(square, spriteName) > before then
+        LayeredPlacement.markConstruction(square)
         return true
     end
     pcall(function()
         props:placeMoveableInternal(square, item, spriteName)
     end)
-    return countSprite(square, spriteName) > before
+    if countSprite(square, spriteName) > before then
+        LayeredPlacement.markConstruction(square)
+        return true
+    end
+    return false
 end
 
 --- Multi-part decor that is not ForceSingleItem needs one inventory item per
@@ -378,6 +390,11 @@ local function collectMultiPartItems(props, character, members, spriteGrid)
 end
 
 local function cheatPlaceFloating(props, character, square, origSpriteName)
+    -- Pure MP clients must not spawn here — use the timed-action path so the
+    -- server complete() persists the objects. Brush create falls through to that.
+    if not LayeredPlacement.canMutateWorld() then
+        return false
+    end
     if not LayeredPlacement.hasPlaceRequirements(props, character) then
         return false
     end
@@ -401,6 +418,7 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
                 if placePart(props, gridMember.square, parts[i].item, gridMember.sprite:getName()) then
                     placed = placed + 1
                     removePlacedInventoryItem(character, parts[i].item, parts[i].container)
+                    LayeredPlacement.markConstruction(gridMember.square)
                 end
             end
         else
@@ -417,6 +435,7 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
                 end
                 if placePart(props, gridMember.square, gridItem, gridMember.sprite:getName()) then
                     placed = placed + 1
+                    LayeredPlacement.markConstruction(gridMember.square)
                 end
             end
             if placed > 0 then
@@ -432,6 +451,7 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
         if placePart(props, square, item, props.spriteName or origSpriteName) then
             placed = 1
             removePlacedInventoryItem(character, item, container)
+            LayeredPlacement.markConstruction(square)
         end
     end
 
@@ -439,6 +459,7 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
         if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
             ISMoveableCursor.clearCacheForAllPlayers()
         end
+        LayeredPlacement.markConstruction(square)
         LayeredPlacement.log("placed floating decor @ "
             .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
             .. " parts=" .. tostring(placed))
@@ -591,6 +612,9 @@ local function attachWallOverlay(wall, spriteName)
         if isServer() and wall.transmitUpdatedSpriteToClients then
             wall:transmitUpdatedSpriteToClients()
         end
+        if wall.getSquare then
+            LayeredPlacement.markConstruction(wall:getSquare())
+        end
         return true
     end
 
@@ -614,6 +638,9 @@ local function attachWallOverlay(wall, spriteName)
         end
     end)
     if ok and (childCount() > beforeChild or attachedCount() > beforeAnim) then
+        if wall.getSquare then
+            LayeredPlacement.markConstruction(wall:getSquare())
+        end
         return true
     end
     return false
@@ -643,6 +670,7 @@ local function placeWallDecor(props, character, square, origSpriteName)
         if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
             ISMoveableCursor.clearCacheForAllPlayers()
         end
+        LayeredPlacement.markConstruction(square)
         LayeredPlacement.log("wall decor " .. how .. " @ "
             .. tostring(square:getX()) .. "," .. tostring(square:getY())
             .. "," .. tostring(square:getZ())
@@ -707,33 +735,35 @@ local function placeWallDecor(props, character, square, origSpriteName)
     local isNorthOrWest = facing == "N" or facing == "W"
     local isEastOrSouth = facing == "E" or facing == "S"
     local isOverlay = props.type == "WallOverlay"
+    local canPersist = LayeredPlacement.canMutateWorld()
 
-    -- Prefer vanilla internals first — they already encode the side rules.
-    pcall(function()
-        props:placeMoveableInternal(square, item, spriteName)
-    end)
-    if appeared() then
-        return finishOk(item, "vanilla")
+    -- Prefer vanilla internals first when we can persist (server/SP).
+    if canPersist then
+        pcall(function()
+            props:placeMoveableInternal(square, item, spriteName)
+        end)
+        if appeared() then
+            return finishOk(item, "vanilla")
+        end
     end
 
     if isOverlay and isEastOrSouth and wall then
-        -- E/S: must attach to this square's wall (not free-spawn next door).
+        -- E/S: attach (transmitUpdatedSpriteToServer is valid on MP clients).
         if attachWallOverlay(wall, spriteName) and appeared() then
             return finishOk(item, "wall-attached")
         end
-        -- Last resort on the aimed square so pickup/hover side still match.
-        if forceSpawnDecor(square, spriteName, item) and appeared() then
+        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned-same-side")
         end
     elseif isOverlay and isNorthOrWest then
         -- N/W: free object on the aimed square only — never attach to the
         -- adjacent wall (that lands in the other room).
-        if forceSpawnDecor(square, spriteName, item) and appeared() then
+        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned-aimed")
         end
     else
         -- Plain WallObject / WindowObject: free object on aimed square.
-        if forceSpawnDecor(square, spriteName, item) and appeared() then
+        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned")
         end
     end
@@ -766,6 +796,11 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         end
         if cheatPlaceFloating(self, character, square, origSpriteName) then
             return true
+        end
+        -- Pure MP client: refuse local place so the timed-action server
+        -- complete() owns persistence. Returning false here is intentional.
+        if not LayeredPlacement.canMutateWorld() then
+            return false
         end
         LayeredPlacement.log("brush place produced 0 parts")
         return false
@@ -1054,6 +1089,7 @@ end
 
 local _isAdjacentToAnySquare = ISMoveablesAction.isAdjacentToAnySquare
 local _isValidMoveablesAction = ISMoveablesAction.isValid
+local _getDurationMoveablesAction = ISMoveablesAction.getDuration
 
 function ISMoveablesAction:isAdjacentToAnySquare()
     if _isAdjacentToAnySquare(self) then
@@ -1079,6 +1115,15 @@ function ISMoveablesAction:isValid()
         end
     end
     return true
+end
+
+--- Floating highs: keep the near-instant feel on MP while still running
+--- complete() on the server so objects persist across rejoin.
+function ISMoveablesAction:getDuration()
+    if isFloatingDecorAction(self) then
+        return 1
+    end
+    return _getDurationMoveablesAction(self)
 end
 
 LayeredPlacement.log("place hooks ready (floating decor place/pickup)")

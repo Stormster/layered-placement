@@ -156,8 +156,9 @@ local function hookCursor()
                 x, y, z = cs:getX(), cs:getY(), cs:getZ()
             end
 
-            -- Brush-style: floating highs place/pick instantly — no spinner, no
-            -- timed-action Z/adjacency cancel that was killing catwalk aims.
+            -- Brush-style: floating highs place/pick instantly on SP / listen host.
+            -- Pure MP clients must use the timed-action path so server complete()
+            -- creates + saves the objects (client AddSpecialObject vanishes on rejoin).
             local mode = ISMoveableCursor.mode[self.player]
             local props = self.currentMoveProps or self.origMoveProps
             if (mode == "place" or mode == "pickup")
@@ -173,6 +174,9 @@ local function hookCursor()
                 end
                 local square = (getCell() and getCell():getGridSquare(x, y, z)) or cs
                 if square and LayeredPlacement.withinBrushReach(self.character, square) then
+                    if not LayeredPlacement.canMutateWorld() then
+                        return _create(self, x, y, z, north, sprite)
+                    end
                     if mode == "place" then
                         props:placeMoveableViaCursor(
                             self.character, square, self.origSpriteName, self

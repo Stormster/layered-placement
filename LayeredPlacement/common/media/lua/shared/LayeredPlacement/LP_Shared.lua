@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.7"
+LayeredPlacement.VERSION = "1.6.8"
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
@@ -19,6 +19,27 @@ function LayeredPlacement.log(msg)
     end
 end
 
+--- True when this process may create/persist world objects.
+--- Pure MP clients must not AddSpecialObject locally — those ghosts vanish on
+--- rejoin while the inventory remove already synced. SP and servers (including
+--- listen-server hosts, who are both client+server) may mutate the world.
+function LayeredPlacement.canMutateWorld()
+    if isClient() and not isServer() then
+        return false
+    end
+    return true
+end
+
+--- Mark the chunk so placed moveables are written on save (vanilla does this
+--- in ISMoveablesAction:complete; our brush path must too).
+function LayeredPlacement.markConstruction(square)
+    if not square then
+        return
+    end
+    if buildUtil and buildUtil.setHaveConstruction then
+        buildUtil.setHaveConstruction(square, true)
+    end
+end
 local function flag(name)
     local opts = LayeredPlacement.options
     if not opts then
