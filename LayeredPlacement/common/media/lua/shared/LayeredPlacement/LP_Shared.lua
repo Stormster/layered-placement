@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.16"
+LayeredPlacement.VERSION = "1.6.17"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -46,6 +46,209 @@ function LayeredPlacement.fixInventoryMoveableDrops(container)
     end
     for i = 0, items:size() - 1 do
         LayeredPlacement.makeMoveableDroppable(items:get(i))
+    end
+end
+
+--- Multi-tile hanging lights on rail/void tiles often lose a partner on chunk
+--- reload (empty air squares may not persist). Tag each part so we can rebuild.
+
+function LayeredPlacement.gridPartsFromSprite(sprite)
+    if not sprite or not sprite.getSpriteGrid then
+        return nil
+    end
+    local grid = sprite:getSpriteGrid()
+    if not grid then
+        return nil
+    end
+    local parts = {}
+    for gx = 0, grid:getWidth() - 1 do
+        for gy = 0, grid:getHeight() - 1 do
+            local spr = grid:getSprite(gx, gy)
+            if spr and spr.getName then
+                table.insert(parts, { n = spr:getName(), x = gx, y = gy })
+            end
+        end
+    end
+    if #parts < 2 then
+        return nil
+    end
+    return parts, grid
+end
+
+function LayeredPlacement.tagMultiGridObject(obj, originX, originY, originZ, parts)
+    if not obj or not obj.getModData or not parts or #parts < 2 then
+        return
+    end
+    if originX == nil or originY == nil or originZ == nil then
+        return
+    end
+    local md = obj:getModData()
+    md.lpGrid = {
+        ox = originX,
+        oy = originY,
+        oz = originZ,
+        parts = parts,
+    }
+    if obj.transmitModData then
+        pcall(function()
+            obj:transmitModData()
+        end)
+    end
+end
+
+--- Find an object on a square whose sprite name matches.
+function LayeredPlacement.findSpriteObject(square, spriteName)
+    if not square or not spriteName or not square.getObjects then
+        return nil
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return nil
+    end
+    for i = objects:size() - 1, 0, -1 do
+        local obj = objects:get(i)
+        local spr = obj and obj:getSprite()
+        if spr and spr:getName() == spriteName then
+            return obj
+        end
+    end
+    return nil
+end
+
+--- Spawn one hanging-decor sprite (same path as floating place). Shared so
+--- LoadGridsquare restore can rebuild missing multi-tile partners.
+function LayeredPlacement.spawnDecorSprite(square, spriteName)
+    if not square or not spriteName or not LayeredPlacement.canMutateWorld() then
+        return nil
+    end
+    local spr = getSprite(spriteName)
+    if not spr then
+        return nil
+    end
+    local obj = nil
+    local ok, err = pcall(function()
+        local tileType = spr:getType()
+        if tileType == IsoObjectType.lightswitch then
+            obj = IsoLightSwitch.new(getCell(), square, spr, square:getRoomID())
+            if obj.addLightSourceFromSprite then
+                obj:addLightSourceFromSprite()
+            end
+        else
+            obj = IsoObject.new(getCell(), square, spr)
+        end
+        square:AddSpecialObject(obj)
+        if obj and instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
+            local md = obj.getModData and obj:getModData()
+            local wantOn = true
+            if md and md.lpWantOn ~= nil then
+                wantOn = md.lpWantOn and true or false
+            end
+            LayeredPlacement.preparePlacedLight(obj, wantOn)
+        end
+        if isServer() and obj and obj.transmitCompleteItemToClients then
+            obj:transmitCompleteItemToClients()
+        end
+        if square.RecalcProperties then
+            square:RecalcProperties()
+        end
+        if square.RecalcAllWithNeighbours then
+            square:RecalcAllWithNeighbours(true)
+        end
+        LayeredPlacement.markConstruction(square)
+        triggerEvent("OnObjectAdded", obj)
+    end)
+    if not ok then
+        LayeredPlacement.log("spawnDecorSprite failed: " .. tostring(err))
+        return nil
+    end
+    return obj
+end
+
+--- Rebuild any missing multi-tile partners recorded on this object.
+function LayeredPlacement.restoreMultiGridPartners(obj)
+    if not obj or not LayeredPlacement.canMutateWorld() then
+        return false
+    end
+    local square = obj.getSquare and obj:getSquare()
+    local spr = obj.getSprite and obj:getSprite()
+    if not square or not spr then
+        return false
+    end
+
+    local parts, originX, originY, originZ
+    local md = obj.getModData and obj:getModData()
+    local grid = md and md.lpGrid
+    if grid and grid.parts and grid.ox then
+        parts = grid.parts
+        originX, originY, originZ = grid.ox, grid.oy, grid.oz
+    else
+        -- Untagged leftovers from older versions: rebuild from the sprite grid.
+        local built, spriteGrid = LayeredPlacement.gridPartsFromSprite(spr)
+        if not built or not spriteGrid then
+            return false
+        end
+        parts = built
+        originX = square:getX() - spriteGrid:getSpriteGridPosX(spr)
+        originY = square:getY() - spriteGrid:getSpriteGridPosY(spr)
+        originZ = square:getZ()
+    end
+
+    local restored = 0
+    for i = 1, #parts do
+        local part = parts[i]
+        if part and part.n and part.x ~= nil and part.y ~= nil then
+            local sq = LayeredPlacement.ensureGridSquare(
+                originX + part.x, originY + part.y, originZ, true
+            )
+            if sq then
+                LayeredPlacement.markConstruction(sq)
+                local existing = LayeredPlacement.findSpriteObject(sq, part.n)
+                if not existing then
+                    local spawned = LayeredPlacement.spawnDecorSprite(sq, part.n)
+                    if spawned then
+                        LayeredPlacement.tagMultiGridObject(
+                            spawned, originX, originY, originZ, parts
+                        )
+                        restored = restored + 1
+                    end
+                else
+                    LayeredPlacement.tagMultiGridObject(
+                        existing, originX, originY, originZ, parts
+                    )
+                end
+            end
+        end
+    end
+    if restored > 0 then
+        LayeredPlacement.tagMultiGridObject(obj, originX, originY, originZ, parts)
+        LayeredPlacement.log("restored " .. tostring(restored) .. " multi-grid part(s)")
+    end
+    return restored > 0
+end
+
+function LayeredPlacement.restoreMultiGridOnSquare(square)
+    if not square or not square.getObjects or not LayeredPlacement.canMutateWorld() then
+        return
+    end
+    local objects = square:getObjects()
+    if not objects then
+        return
+    end
+    -- Copy refs first; restore may AddSpecialObject mid-loop.
+    local candidates = {}
+    for i = 0, objects:size() - 1 do
+        local obj = objects:get(i)
+        if obj then
+            local md = obj.getModData and obj:getModData()
+            local spr = obj.getSprite and obj:getSprite()
+            local grid = spr and spr.getSpriteGrid and spr:getSpriteGrid()
+            if (md and md.lpGrid) or (grid and instanceof(obj, "IsoLightSwitch")) then
+                table.insert(candidates, obj)
+            end
+        end
+    end
+    for i = 1, #candidates do
+        LayeredPlacement.restoreMultiGridPartners(candidates[i])
     end
 end
 
