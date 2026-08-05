@@ -94,3 +94,39 @@ bindOptionCallbacks(options)
 
 Events.OnMainMenuEnter.Add(loadFromDiskThenApply)
 Events.OnGameStart.Add(loadFromDiskThenApply)
+
+--- Small Lights / other ForceSingleItem multis can't Drop until canBeDroppedOnFloor
+--- is flipped. Fix anything already sitting in the player inventory.
+local dropHooked = false
+
+local function hookDropItem()
+    if dropHooked then
+        return
+    end
+    if not ISInventoryPaneContextMenu or not ISInventoryPaneContextMenu.dropItem then
+        return
+    end
+    dropHooked = true
+    local _dropItem = ISInventoryPaneContextMenu.dropItem
+    ISInventoryPaneContextMenu.dropItem = function(item, player)
+        LayeredPlacement.makeMoveableDroppable(item)
+        return _dropItem(item, player)
+    end
+end
+
+local function fixPlayerMoveableDrops()
+    hookDropItem()
+    local player = getSpecificPlayer and getSpecificPlayer(0)
+    if not player then
+        return
+    end
+    LayeredPlacement.fixInventoryMoveableDrops(player:getInventory())
+end
+
+Events.OnGameStart.Add(fixPlayerMoveableDrops)
+Events.OnCreatePlayer.Add(function(playerIndex, player)
+    hookDropItem()
+    if player then
+        LayeredPlacement.fixInventoryMoveableDrops(player:getInventory())
+    end
+end)

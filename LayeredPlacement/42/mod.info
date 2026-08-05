@@ -3,5 +3,5 @@ id=LayeredPlacement
 description=Makes Move Furniture Place work more like the admin brush for lights, posters, and other wall/ceiling decor. Put lights over furniture, hang stuff on railings and catwalks, and turn those lights on without fighting the railing. Separate toggles in Mod Options. Floor furniture unchanged. Multiplayer should work — please report any issues. B42.20+.
 poster=poster.png
 author=Storm
-modversion=1.6.15
+modversion=1.6.16
 versionMin=42.20
