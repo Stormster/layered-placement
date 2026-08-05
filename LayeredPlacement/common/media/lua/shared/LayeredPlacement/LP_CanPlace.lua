@@ -523,6 +523,33 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
             ISMoveableCursor.clearCacheForAllPlayers()
         end
         LayeredPlacement.markConstruction(square)
+        -- Multi-tile string lights are separate IsoLightSwitches; light the
+        -- whole group so place doesn't leave one half dark.
+        if props.isMultiSprite then
+            local anchorObj = LayeredPlacement.findSpriteObject(
+                square, props.spriteName or origSpriteName
+            )
+            if not anchorObj and props.sprite then
+                local grid = props.sprite:getSpriteGrid()
+                local anchor = grid and grid:getAnchorSprite()
+                if anchor then
+                    local members = buildFloatingGridMembers(props, square)
+                    if members then
+                        for _, m in ipairs(members) do
+                            if m.sprite == anchor then
+                                anchorObj = LayeredPlacement.findSpriteObject(
+                                    m.square, m.sprite:getName()
+                                )
+                                break
+                            end
+                        end
+                    end
+                end
+            end
+            if anchorObj and instanceof(anchorObj, "IsoLightSwitch") then
+                LayeredPlacement.setLightGroupState(anchorObj, true)
+            end
+        end
         LayeredPlacement.log("placed floating decor @ "
             .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
             .. " parts=" .. tostring(placed))
@@ -532,7 +559,141 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
     return false
 end
 
+local function gridBelongsToProps(gridData, spriteGrid)
+    if not gridData or not gridData.parts or not spriteGrid then
+        return false
+    end
+    local expected = {}
+    local expectedCount = 0
+    for gx = 0, spriteGrid:getWidth() - 1 do
+        for gy = 0, spriteGrid:getHeight() - 1 do
+            local spr = spriteGrid:getSprite(gx, gy)
+            if spr and spr.getName then
+                expected[spr:getName()] = true
+                expectedCount = expectedCount + 1
+            end
+        end
+    end
+    local matched = 0
+    for i = 1, #gridData.parts do
+        local part = gridData.parts[i]
+        if not part or not part.n or not expected[part.n] then
+            return false
+        end
+        matched = matched + 1
+    end
+    return matched == expectedCount
+end
+
+--- Find a hanging-decor object on this square even when the cursor sprite
+--- doesn't match (wrong multi-tile half, lit sprite, etc.).
+local function findFloatingPartOnSquare(props, square)
+    if not props or not square then
+        return nil, nil
+    end
+    local obj, sprInstance = props:findOnSquare(square, props.spriteName)
+    if obj then
+        return obj, sprInstance
+    end
+    local spriteGrid = props.sprite and props.sprite.getSpriteGrid and props.sprite:getSpriteGrid()
+    if spriteGrid then
+        for gx = 0, spriteGrid:getWidth() - 1 do
+            for gy = 0, spriteGrid:getHeight() - 1 do
+                local partSprite = spriteGrid:getSprite(gx, gy)
+                if partSprite then
+                    obj, sprInstance = props:findOnSquare(square, partSprite:getName())
+                    if obj then
+                        return obj, sprInstance
+                    end
+                end
+            end
+        end
+    end
+    -- Last resort: only a tag for this exact sprite grid. Other stacked
+    -- hanging decor can share the square and must never be removed.
+    if square.getObjects then
+        local objects = square:getObjects()
+        if objects then
+            for i = objects:size() - 1, 0, -1 do
+                local candidate = objects:get(i)
+                if candidate and candidate.getModData then
+                    local md = candidate:getModData()
+                    if md and gridBelongsToProps(md.lpGrid, spriteGrid) then
+                        return candidate, nil
+                    end
+                end
+                if candidate and instanceof(candidate, "IsoLightSwitch") and props.isoType == "IsoLightSwitch" then
+                    local spr = candidate.getSprite and candidate:getSprite()
+                    if spr and spr.getSpriteGrid and spr:getSpriteGrid() and spriteGrid
+                        and spr:getSpriteGrid() == spriteGrid
+                    then
+                        return candidate, nil
+                    end
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+--- Force-remove a world object when vanilla pickUpMoveableInternal no-ops
+--- (instanceItem/TransferComponents failures leave lights stuck in the world).
+local function forceRemoveWorldObject(square, obj)
+    if not square or not obj then
+        return false
+    end
+    local ok = pcall(function()
+        triggerEvent("OnObjectAboutToBeRemoved", obj)
+        if square.transmitRemoveItemFromSquare then
+            square:transmitRemoveItemFromSquare(obj)
+        elseif square.RemoveTileObject then
+            square:RemoveTileObject(obj)
+        end
+        if square.RecalcProperties then
+            square:RecalcProperties()
+        end
+        if square.RecalcAllWithNeighbours then
+            square:RecalcAllWithNeighbours(true)
+        end
+    end)
+    return ok and true or false
+end
+
+local function removeFloatingPart(props, character, square, obj, sprInstance, spriteName, createItem)
+    if not obj or not square then
+        return false
+    end
+    local name = spriteName
+    if not name and obj.getSprite and obj:getSprite() then
+        name = obj:getSprite():getName()
+    end
+    name = name or props.spriteName
+    local before = obj.getObjectIndex and obj:getObjectIndex() or -1
+    pcall(function()
+        props:pickUpMoveableInternal(character, square, obj, sprInstance, name, createItem, true)
+    end)
+    local after = obj.getObjectIndex and obj:getObjectIndex() or -1
+    if before >= 0 and after < 0 then
+        return true
+    end
+    -- Still in the world (or index check unavailable): yank it directly.
+    if after >= 0 or (obj.getSquare and obj:getSquare() == square) then
+        return forceRemoveWorldObject(square, obj)
+    end
+    return true
+end
+
 local function cheatPickUpFloating(props, character, square, createItem)
+    if not LayeredPlacement.canMutateWorld() then
+        -- Pure MP clients: timed-action complete has no authority to delete
+        -- world objects. Ask the server (same path as the brush pickup).
+        if LayeredPlacement.requestFloatingWorldAction(
+            character, square, props.spriteName, "pickup", props.spriteName, props.cursorFacing
+        ) then
+            return {}
+        end
+        return nil
+    end
     ensureMultiSpriteSquares(props, square)
     -- forceAllow=true: same as movables cheat for this tile. Vanilla returns false
     -- (not nil) when a grid partner is missing, which is the case we recover from.
@@ -540,18 +701,22 @@ local function cheatPickUpFloating(props, character, square, createItem)
     if result ~= nil and result ~= false then
         return result
     end
-    local obj, sprInstance = props:findOnSquare(square, props.spriteName)
-    if not obj and square and square.getObjects and props.sprite and props.sprite.getSpriteGrid then
-        local grid = props.sprite:getSpriteGrid()
-        if grid then
-            for gx = 0, grid:getWidth() - 1 do
-                for gy = 0, grid:getHeight() - 1 do
-                    local partSprite = grid:getSprite(gx, gy)
-                    if partSprite then
-                        obj, sprInstance = props:findOnSquare(square, partSprite:getName())
-                        if obj then
-                            break
-                        end
+
+    local obj, sprInstance = findFloatingPartOnSquare(props, square)
+    -- Cursor square may be the empty half of a 2-tile light; search partners.
+    if not obj and props.sprite and props.sprite.getSpriteGrid then
+        local spriteGrid = props.sprite:getSpriteGrid()
+        if spriteGrid and square then
+            local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
+            local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
+            local sZ = square:getZ()
+            for gx = 0, spriteGrid:getWidth() - 1 do
+                for gy = 0, spriteGrid:getHeight() - 1 do
+                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, true)
+                    obj, sprInstance = findFloatingPartOnSquare(props, partSq)
+                    if obj then
+                        square = partSq
+                        break
                     end
                 end
                 if obj then
@@ -561,65 +726,150 @@ local function cheatPickUpFloating(props, character, square, createItem)
         end
     end
     if not obj then
+        LayeredPlacement.log("floating pickup: no object on square")
         return nil
     end
-    local spriteGrid = props.sprite and props.sprite:getSpriteGrid()
-    if spriteGrid then
-        -- Non-ForceSingleItem grids hand back one item per sprite, like vanilla.
-        local perPartItem = createItem and not props.isForceSingleItem
-        local removed = 0
-        local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
-        local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
-        local sZ = square:getZ()
-        -- If props.sprite isn't on this square (we matched another grid part),
-        -- recompute origin from the object we actually found.
-        local foundSpr = obj.getSprite and obj:getSprite()
-        if foundSpr and foundSpr.getSpriteGrid and foundSpr:getSpriteGrid() == spriteGrid then
-            sX = square:getX() - spriteGrid:getSpriteGridPosX(foundSpr)
-            sY = square:getY() - spriteGrid:getSpriteGridPosY(foundSpr)
+
+    --- Snapshot light settings onto the inventory item before we delete parts.
+    local function makeForceSingleItem(fromObj, spriteName)
+        if not createItem or not props.isForceSingleItem then
+            return nil
         end
-        for gx = 0, spriteGrid:getWidth() - 1 do
-            for gy = 0, spriteGrid:getHeight() - 1 do
-                local partSprite = spriteGrid:getSprite(gx, gy)
-                if partSprite then
-                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, true)
-                    local partObj, partSpr = props:findOnSquare(partSq, partSprite:getName())
-                    if partObj then
-                        props:pickUpMoveableInternal(
-                            character, partSq, partObj, partSpr, partSprite:getName(), perPartItem, true
-                        )
+        local item = props:instanceItem(spriteName or props.spriteName)
+        if not item and fromObj and fromObj.getSprite and fromObj:getSprite() then
+            item = props:instanceItem(fromObj:getSprite():getName())
+        end
+        if item and fromObj and instanceof(fromObj, "IsoLightSwitch")
+            and fromObj.setCustomSettingsToItem
+        then
+            pcall(function()
+                fromObj:setCustomSettingsToItem(item)
+            end)
+        end
+        return item
+    end
+
+    local function giveItem(item)
+        if not item or not character then
+            return
+        end
+        character:getInventory():AddItem(item)
+        if sendAddItemToContainer then
+            sendAddItemToContainer(character:getInventory(), item)
+        end
+        LayeredPlacement.makeMoveableDroppable(item)
+    end
+
+    -- Prefer the recorded multi-tile map (survives lit sprites / missing halves).
+    local md = obj.getModData and obj:getModData()
+    local grid = md and md.lpGrid
+    local propsGrid = props.sprite and props.sprite.getSpriteGrid and props.sprite:getSpriteGrid()
+    if grid and grid.parts and grid.ox ~= nil and gridBelongsToProps(grid, propsGrid) then
+        local perPartItem = createItem and not props.isForceSingleItem
+        local anchor = propsGrid and propsGrid:getAnchorSprite()
+        local pendingItem = makeForceSingleItem(
+            obj, anchor and anchor:getName() or props.spriteName
+        )
+        -- Never remove a ForceSingleItem grid unless its replacement item
+        -- already exists. This is the inventory-loss guard for recovery pickup.
+        if createItem and props.isForceSingleItem and not pendingItem then
+            LayeredPlacement.log("floating pickup aborted: could not create ForceSingleItem")
+            return nil
+        end
+        local removed = 0
+        for i = 1, #grid.parts do
+            local part = grid.parts[i]
+            if part and part.n and part.x ~= nil and part.y ~= nil then
+                local partSq = LayeredPlacement.ensureGridSquare(
+                    grid.ox + part.x, grid.oy + part.y, grid.oz, true
+                )
+                local partObj = LayeredPlacement.findSpriteObject(partSq, part.n)
+                if not partObj then
+                    partObj = findFloatingPartOnSquare(props, partSq)
+                end
+                if partObj then
+                    if removeFloatingPart(props, character, partSq, partObj, nil, part.n, perPartItem) then
                         removed = removed + 1
                     end
                 end
             end
         end
-        if createItem and props.isForceSingleItem and removed > 0 then
-            local anchor = spriteGrid:getAnchorSprite()
-            local item = props:instanceItem(anchor and anchor:getName() or props.spriteName)
-            if item then
-                character:getInventory():AddItem(item)
-                if sendAddItemToContainer then
-                    sendAddItemToContainer(character:getInventory(), item)
+        if removed > 0 then
+            giveItem(pendingItem)
+            if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+                ISMoveableCursor.clearCacheForAllPlayers()
+            end
+            LayeredPlacement.log("picked up floating lpGrid parts=" .. tostring(removed))
+            LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+            LayeredPlacement.markConstruction(square)
+            return {}
+        end
+    end
+
+    local spriteGrid = props.sprite and props.sprite:getSpriteGrid()
+    if not spriteGrid and obj.getSprite and obj:getSprite() then
+        spriteGrid = obj:getSprite():getSpriteGrid()
+    end
+    if spriteGrid then
+        -- Non-ForceSingleItem grids hand back one item per sprite, like vanilla.
+        local perPartItem = createItem and not props.isForceSingleItem
+        local foundSpr = obj.getSprite and obj:getSprite() or props.sprite
+        local sX = square:getX() - spriteGrid:getSpriteGridPosX(foundSpr)
+        local sY = square:getY() - spriteGrid:getSpriteGridPosY(foundSpr)
+        local sZ = square:getZ()
+        local anchor = spriteGrid:getAnchorSprite()
+        local pendingItem = makeForceSingleItem(obj, anchor and anchor:getName() or props.spriteName)
+        if createItem and props.isForceSingleItem and not pendingItem then
+            LayeredPlacement.log("floating pickup aborted: could not create ForceSingleItem anchor")
+            return nil
+        end
+        local removed = 0
+        for gx = 0, spriteGrid:getWidth() - 1 do
+            for gy = 0, spriteGrid:getHeight() - 1 do
+                local partSprite = spriteGrid:getSprite(gx, gy)
+                if partSprite then
+                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, true)
+                    local partObj, partSpr = findFloatingPartOnSquare(props, partSq)
+                    if not partObj then
+                        partObj, partSpr = props:findOnSquare(partSq, partSprite:getName())
+                    end
+                    if partObj then
+                        if removeFloatingPart(
+                            props, character, partSq, partObj, partSpr, partSprite:getName(), perPartItem
+                        ) then
+                            removed = removed + 1
+                        end
+                    end
                 end
-                LayeredPlacement.makeMoveableDroppable(item)
             end
         end
-        if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
-            ISMoveableCursor.clearCacheForAllPlayers()
-        end
         if removed > 0 then
+            giveItem(pendingItem)
+            if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+                ISMoveableCursor.clearCacheForAllPlayers()
+            end
             LayeredPlacement.log("picked up floating multi decor parts=" .. tostring(removed))
             LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+            LayeredPlacement.markConstruction(square)
             return {}
         end
         return nil
     end
-    local item = props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
-    if item then
-        LayeredPlacement.makeMoveableDroppable(item)
+    local pendingItem = makeForceSingleItem(obj, props.spriteName)
+    if createItem and props.isForceSingleItem and not pendingItem then
+        LayeredPlacement.log("floating pickup aborted: could not create ForceSingleItem")
+        return nil
     end
-    LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
-    return item
+    if removeFloatingPart(
+        props, character, square, obj, sprInstance, props.spriteName,
+        createItem and not props.isForceSingleItem
+    ) then
+        giveItem(pendingItem)
+        LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+        LayeredPlacement.markConstruction(square)
+        return {}
+    end
+    return nil
 end
 
 --- Count this sprite as a free object or as a wall child/attached overlay
@@ -983,10 +1233,13 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
         return result
     end
     if isFloatingObjectDecor(self) and square then
-        local obj = self:findOnSquare(square, self.spriteName)
+        local obj = findFloatingPartOnSquare(self, square)
         -- Always use the incomplete-grid recovery path for hanging multis.
         -- Vanilla forceAllow still requires every grid partner to exist.
-        if forceAllow or self:canPickUpMoveable(character, square, obj) then
+        -- ViaCursor does not pass forceAllow, so also allow when we can see a part.
+        if forceAllow or self:canPickUpMoveable(character, square, obj)
+            or (obj and self:canPickUpMoveableInternal(character, square, obj, false))
+        then
             return afterPickup(cheatPickUpFloating(self, character, square, createItem))
         end
         return nil

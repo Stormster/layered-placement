@@ -307,8 +307,17 @@ end
 local _onToggleLight = ISWorldObjectContextMenu.onToggleLight
 
 local function toggleHighLight(playerObj, light)
-    if not playerObj or not light or light:getObjectIndex() == -1 then
+    if not playerObj or not light then
         return false
+    end
+    -- Stale menu refs can report objectIndex -1; re-resolve from the square.
+    if light:getObjectIndex() == -1 then
+        local sq = light:getSquare()
+        local name = light:getSprite() and light:getSprite():getName()
+        light = LayeredPlacement.findSpriteObject(sq, name) or light
+        if not light or light:getObjectIndex() == -1 then
+            return false
+        end
     end
     if not inLightReach(playerObj, light:getSquare()) then
         return false
@@ -320,8 +329,10 @@ end
 function ISWorldObjectContextMenu.onToggleLight(worldobjects, light, player)
     if LayeredPlacement.allowLightInteract() and isHighLightSwitch(light) then
         local playerObj = getSpecificPlayer(player)
-        toggleHighLight(playerObj, light)
-        return
+        if toggleHighLight(playerObj, light) then
+            return
+        end
+        -- Fall through to vanilla walk+action if our path couldn't run.
     end
     return _onToggleLight(worldobjects, light, player)
 end
