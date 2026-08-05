@@ -28,12 +28,13 @@ local function chebyshev(playerObj, square)
     if not psq or not square then
         return 999
     end
-    if psq:getZ() ~= square:getZ() then
+    local dz = math.abs(psq:getZ() - square:getZ())
+    if dz > LayeredPlacement.BRUSH_MAX_Z then
         return 999
     end
     local dx = math.abs(psq:getX() - square:getX())
     local dy = math.abs(psq:getY() - square:getY())
-    return math.max(dx, dy)
+    return math.max(dx, dy) + dz
 end
 
 local function inLightReach(playerObj, square)

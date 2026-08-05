@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.20"
+LayeredPlacement.VERSION = "1.6.21"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -371,16 +371,36 @@ function LayeredPlacement.lightShouldUseBattery(obj)
     if not square then
         return true
     end
-    if square.haveElectricity and square:haveElectricity() then
-        return false
-    end
-    -- Match the public portion of IsoLightSwitch.hasElectricityAround:
-    -- grid power only counts on an interior / roof-hidden building square.
-    -- Do not call IsoLightSwitch:isBuildingSquare; it is a private Java method.
+    -- Match IsoLightSwitch.hasElectricityAround's ordering. During grid power,
+    -- haveElectricity() alone is too broad: exterior railing squares can report
+    -- power even though a light switch there cannot consume it.
     local hasGridPower = square.hasGridPower and square:hasGridPower()
     local isBuildingSquare = (square.getRoom and square:getRoom())
         or (square.getRoofHideBuilding and square:getRoofHideBuilding())
-    if hasGridPower and isBuildingSquare then
+    if hasGridPower then
+        if isBuildingSquare then
+            return false
+        end
+        -- Fascia objects are powered through their attached building square.
+        local objects = square.getObjects and square:getObjects()
+        if objects then
+            for i = 0, objects:size() - 1 do
+                local candidate = objects:get(i)
+                if candidate and candidate.isFascia and candidate:isFascia()
+                    and candidate.getFasciaAttachedSquare
+                then
+                    local attached = candidate:getFasciaAttachedSquare()
+                    if attached and ((attached.getRoom and attached:getRoom())
+                        or (attached.getRoofHideBuilding and attached:getRoofHideBuilding()))
+                    then
+                        return false
+                    end
+                end
+            end
+        end
+        return true
+    end
+    if square.haveElectricity and square:haveElectricity() then
         return false
     end
     return true
@@ -894,10 +914,14 @@ local function findBestSquareAtPlayerZ(cell, x, y, pz, mode)
     local exact = getOrCreateSquare(cell, x, y, pz, force)
 
     if mode == "pickup" then
-        if pickupAimScore(exact) > 0 then
-            return exact
-        end
+        -- Score the whole small search area. Returning the first moveable on
+        -- the projected tile made floor trash/tables steal the cursor from a
+        -- nearby high light that the player was visibly aiming at.
+        local exactScore = pickupAimScore(exact)
         local best, bestScore, bestDist = nil, 0, 999
+        if exactScore > 0 then
+            best, bestScore, bestDist = exact, exactScore, 0
+        end
         local radius = 2
         for dx = -radius, radius do
             for dy = -radius, radius do
