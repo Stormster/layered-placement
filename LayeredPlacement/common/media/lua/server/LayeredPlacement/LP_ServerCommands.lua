@@ -87,7 +87,13 @@ local function onPickUpFloating(player, args)
         LayeredPlacement.log("server pickUpFloating: out of reach")
         return
     end
-    props:pickUpMoveable(player, square, true, true)
+    -- Idempotent by object presence: duplicate/late requests must not report
+    -- success or perform any inventory work after the first request removed it.
+    local result = props:pickUpMoveable(player, square, true, true)
+    if result == nil or result == false then
+        LayeredPlacement.log("server pickUpFloating ignored: object already gone or unavailable")
+        return
+    end
     LayeredPlacement.markConstruction(square)
     if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
         ISMoveableCursor.clearCacheForAllPlayers()
@@ -142,9 +148,10 @@ local function onSetLightState(player, args)
         return
     end
     local desired = args.desired and true or false
-    if LayeredPlacement.preparePlacedLight(light, desired) then
+    if LayeredPlacement.setLightGroupState(light, desired) then
         LayeredPlacement.log("server setLightState=" .. tostring(desired) .. " @ "
-            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
+            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z)
+            .. " group=" .. tostring(#LayeredPlacement.collectLightGroup(light)))
     end
 end
 
@@ -177,7 +184,9 @@ local function onLoadSquare(square)
         local obj = objects:get(i)
         if obj and instanceof(obj, "IsoLightSwitch") and obj.getModData then
             local md = obj:getModData()
-            if md and md.lpBatteryLight then
+            -- Re-evaluate battery vs building power (indoor table lights must
+            -- not stay stuck in battery mode from older place paths).
+            if md and (md.lpBatteryLight or md.lpWantOn ~= nil or md.lpGrid) then
                 LayeredPlacement.preparePlacedLight(obj, md.lpWantOn)
             end
         end

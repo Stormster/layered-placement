@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.17"
+LayeredPlacement.VERSION = "1.6.20"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -117,7 +117,7 @@ end
 
 --- Spawn one hanging-decor sprite (same path as floating place). Shared so
 --- LoadGridsquare restore can rebuild missing multi-tile partners.
-function LayeredPlacement.spawnDecorSprite(square, spriteName)
+function LayeredPlacement.spawnDecorSprite(square, spriteName, desiredLightState)
     if not square or not spriteName or not LayeredPlacement.canMutateWorld() then
         return nil
     end
@@ -139,9 +139,12 @@ function LayeredPlacement.spawnDecorSprite(square, spriteName)
         square:AddSpecialObject(obj)
         if obj and instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
             local md = obj.getModData and obj:getModData()
-            local wantOn = true
+            local wantOn = desiredLightState
             if md and md.lpWantOn ~= nil then
                 wantOn = md.lpWantOn and true or false
+            end
+            if wantOn == nil then
+                wantOn = true
             end
             LayeredPlacement.preparePlacedLight(obj, wantOn)
         end
@@ -178,6 +181,10 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
     local parts, originX, originY, originZ
     local md = obj.getModData and obj:getModData()
     local grid = md and md.lpGrid
+    local desiredLightState = md and md.lpWantOn
+    if desiredLightState == nil and instanceof(obj, "IsoLightSwitch") and obj.isActivated then
+        desiredLightState = obj:isActivated() and true or false
+    end
     if grid and grid.parts and grid.ox then
         parts = grid.parts
         originX, originY, originZ = grid.ox, grid.oy, grid.oz
@@ -204,7 +211,9 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
                 LayeredPlacement.markConstruction(sq)
                 local existing = LayeredPlacement.findSpriteObject(sq, part.n)
                 if not existing then
-                    local spawned = LayeredPlacement.spawnDecorSprite(sq, part.n)
+                    local spawned = LayeredPlacement.spawnDecorSprite(
+                        sq, part.n, desiredLightState
+                    )
                     if spawned then
                         LayeredPlacement.tagMultiGridObject(
                             spawned, originX, originY, originZ, parts
@@ -215,6 +224,11 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
                     LayeredPlacement.tagMultiGridObject(
                         existing, originX, originY, originZ, parts
                     )
+                    if desiredLightState ~= nil and instanceof(existing, "IsoLightSwitch")
+                        and LayeredPlacement.preparePlacedLight
+                    then
+                        LayeredPlacement.preparePlacedLight(existing, desiredLightState)
+                    end
                 end
             end
         end
@@ -347,26 +361,62 @@ function LayeredPlacement.allowLightInteract()
     return flag("lightInteract")
 end
 
---- Apply battery power and an optional desired state to a floating light.
---- This must run authoritatively (server in MP) so both the battery fields and
---- lpWantOn are serialized with the world object.
+--- True when this square/light should run on battery (no building power path).
+--- Indoor / powered-room lights must stay on building electricity.
+function LayeredPlacement.lightShouldUseBattery(obj)
+    if not obj or not instanceof(obj, "IsoLightSwitch") then
+        return false
+    end
+    local square = obj.getSquare and obj:getSquare()
+    if not square then
+        return true
+    end
+    if square.haveElectricity and square:haveElectricity() then
+        return false
+    end
+    -- Match the public portion of IsoLightSwitch.hasElectricityAround:
+    -- grid power only counts on an interior / roof-hidden building square.
+    -- Do not call IsoLightSwitch:isBuildingSquare; it is a private Java method.
+    local hasGridPower = square.hasGridPower and square:hasGridPower()
+    local isBuildingSquare = (square.getRoom and square:getRoom())
+        or (square.getRoofHideBuilding and square:getRoofHideBuilding())
+    if hasGridPower and isBuildingSquare then
+        return false
+    end
+    return true
+end
+
+--- Apply power + optional on-state. Battery mode only when the tile has no
+--- building/room electricity path (railings, outdoors, void air).
 function LayeredPlacement.preparePlacedLight(obj, desired)
     if not obj or not instanceof(obj, "IsoLightSwitch") then
         return false
     end
     local ok, err = pcall(function()
-        if obj.setUseBattery then
-            obj:setUseBattery(true)
-        end
-        if obj.setHasBatteryRaw then
-            obj:setHasBatteryRaw(true)
-        end
-        if obj.setPower then
-            obj:setPower(1.0)
+        local needBattery = LayeredPlacement.lightShouldUseBattery(obj)
+        if needBattery then
+            if obj.setUseBattery then
+                obj:setUseBattery(true)
+            end
+            if obj.setHasBatteryRaw then
+                obj:setHasBatteryRaw(true)
+            end
+            if obj.setPower then
+                obj:setPower(1.0)
+            end
+        else
+            if obj.setUseBattery then
+                obj:setUseBattery(false)
+            end
+            if obj.setUseBatteryDirect then
+                pcall(function()
+                    obj:setUseBatteryDirect(false)
+                end)
+            end
         end
         local md = obj:getModData()
         if md then
-            md.lpBatteryLight = true
+            md.lpBatteryLight = needBattery and true or false
             if desired == nil then
                 if md.lpWantOn == nil and obj.isActivated then
                     md.lpWantOn = obj:isActivated() and true or false
@@ -382,9 +432,6 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         if wantOn ~= nil and obj.isActivated
             and obj:isActivated() ~= (wantOn and true or false)
         then
-            -- toggle() follows room-electricity rules and can turn an outdoor
-            -- light off but refuse to turn it back on. The three-argument
-            -- setActive explicitly ignores that switch check.
             local applied = false
             if obj.setActive then
                 pcall(function()
@@ -398,25 +445,24 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
                 obj:toggle()
             end
         end
-        -- toggle() may consume/update battery state; top it back up afterward.
-        if obj.setUseBattery then
-            obj:setUseBattery(true)
-        end
-        if obj.setHasBatteryRaw then
-            obj:setHasBatteryRaw(true)
-        end
-        if obj.setPower then
-            obj:setPower(1.0)
+        if needBattery then
+            if obj.setUseBattery then
+                obj:setUseBattery(true)
+            end
+            if obj.setHasBatteryRaw then
+                obj:setHasBatteryRaw(true)
+            end
+            if obj.setPower then
+                obj:setPower(1.0)
+            end
         end
         if md then
             md.lpWantOn = obj.isActivated and obj:isActivated() or (wantOn and true or false)
+            md.lpBatteryLight = needBattery and true or false
         end
         local square = obj:getSquare()
         local inWorld = square and obj:getObjectIndex() ~= -1
         if inWorld then
-            -- IsoLightSwitch has dedicated packets for battery/bulb settings
-            -- and activation. transmitModData alone leaves clients showing
-            -- "Turn on" against stale state, even when the server is lit.
             if obj.syncCustomizedSettings then
                 obj:syncCustomizedSettings(nil)
             end
@@ -436,17 +482,90 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
     return true
 end
 
+--- Every IsoLightSwitch that belongs to the same multi-tile hanging light.
+--- Single-tile lights just return { obj }.
+function LayeredPlacement.collectLightGroup(obj)
+    local group = {}
+    if not obj or not instanceof(obj, "IsoLightSwitch") then
+        return group
+    end
+    local square = obj:getSquare()
+    local spr = obj:getSprite()
+    if not square or not spr then
+        table.insert(group, obj)
+        return group
+    end
+
+    local md = obj.getModData and obj:getModData()
+    local grid = md and md.lpGrid
+    local originX, originY, originZ, parts
+    if grid and grid.parts and grid.ox ~= nil then
+        originX, originY, originZ, parts = grid.ox, grid.oy, grid.oz, grid.parts
+    else
+        local built, spriteGrid = LayeredPlacement.gridPartsFromSprite(spr)
+        if built and spriteGrid then
+            parts = built
+            originX = square:getX() - spriteGrid:getSpriteGridPosX(spr)
+            originY = square:getY() - spriteGrid:getSpriteGridPosY(spr)
+            originZ = square:getZ()
+        end
+    end
+
+    if not parts then
+        table.insert(group, obj)
+        return group
+    end
+
+    local seen = {}
+    for i = 1, #parts do
+        local part = parts[i]
+        if part and part.n and part.x ~= nil and part.y ~= nil then
+            local sq = LayeredPlacement.ensureGridSquare(
+                originX + part.x, originY + part.y, originZ, true
+            )
+            local found = LayeredPlacement.findSpriteObject(sq, part.n)
+            if found and instanceof(found, "IsoLightSwitch") and not seen[found] then
+                seen[found] = true
+                table.insert(group, found)
+            end
+        end
+    end
+    if #group == 0 then
+        table.insert(group, obj)
+    elseif not seen[obj] then
+        table.insert(group, 1, obj)
+    end
+    return group
+end
+
+--- Set on/off for a light and every multi-tile partner.
+function LayeredPlacement.setLightGroupState(obj, desired)
+    local group = LayeredPlacement.collectLightGroup(obj)
+    local any = false
+    for i = 1, #group do
+        if LayeredPlacement.preparePlacedLight(group[i], desired) then
+            any = true
+        end
+    end
+    return any
+end
+
 --- Toggle immediately in SP/listen-host, or ask the dedicated server to do it.
+--- Always applies the full multi-tile group so string lights don't half-lit.
 function LayeredPlacement.requestLightState(character, obj, desired)
     if not character or not obj or not obj:getSquare() then
         return false
     end
+    desired = desired and true or false
     if LayeredPlacement.canMutateWorld() then
-        return LayeredPlacement.preparePlacedLight(obj, desired)
+        return LayeredPlacement.setLightGroupState(obj, desired)
     end
     if not sendClientCommand then
         return false
     end
+    -- Optimistic local visual so the menu click isn't a no-op while waiting
+    -- for the server packet (still authoritative via setLightState).
+    LayeredPlacement.setLightGroupState(obj, desired)
     local square = obj:getSquare()
     sendClientCommand(character, "LayeredPlacement", "setLightState", {
         x = square:getX(),
@@ -454,7 +573,7 @@ function LayeredPlacement.requestLightState(character, obj, desired)
         z = square:getZ(),
         objectIndex = obj:getObjectIndex(),
         spriteName = obj:getSprite() and obj:getSprite():getName() or nil,
-        desired = desired and true or false,
+        desired = desired,
     })
     return true
 end
