@@ -695,11 +695,14 @@ local function cheatPickUpFloating(props, character, square, createItem)
         return nil
     end
     ensureMultiSpriteSquares(props, square)
-    -- forceAllow=true: same as movables cheat for this tile. Vanilla returns false
-    -- (not nil) when a grid partner is missing, which is the case we recover from.
-    local result = _pickUpMoveable(props, character, square, createItem, true)
-    if result ~= nil and result ~= false then
-        return result
+    -- Vanilla always returns an items table after entering its multi-sprite
+    -- branch, even when a ForceSingleItem part wasn't actually removed. Do not
+    -- trust that truthy no-op; use the verified atomic recovery path below.
+    if not props.isForceSingleItem then
+        local result = _pickUpMoveable(props, character, square, createItem, true)
+        if result ~= nil and result ~= false then
+            return result
+        end
     end
 
     local obj, sprInstance = findFloatingPartOnSquare(props, square)
