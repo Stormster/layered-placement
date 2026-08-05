@@ -518,15 +518,22 @@ local function cheatPickUpFloating(props, character, square, createItem)
                 if sendAddItemToContainer then
                     sendAddItemToContainer(character:getInventory(), item)
                 end
+                LayeredPlacement.makeMoveableDroppable(item)
             end
         end
         if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
             ISMoveableCursor.clearCacheForAllPlayers()
         end
         LayeredPlacement.log("picked up floating multi decor")
+        LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
         return {}
     end
-    return props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
+    local item = props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
+    if item then
+        LayeredPlacement.makeMoveableDroppable(item)
+    end
+    LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+    return item
 end
 
 --- Count this sprite as a free object or as a wall child/attached overlay
@@ -882,10 +889,16 @@ function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
 end
 
 function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, forceAllow)
+    local function afterPickup(result)
+        if character and createItem then
+            LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+        end
+        return result
+    end
     if isFloatingObjectDecor(self) and square then
         local obj = self:findOnSquare(square, self.spriteName)
         if forceAllow or self:canPickUpMoveable(character, square, obj) then
-            return cheatPickUpFloating(self, character, square, createItem)
+            return afterPickup(cheatPickUpFloating(self, character, square, createItem))
         end
         return nil
     end
@@ -894,13 +907,13 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
     end
     local result = _pickUpMoveable(self, character, square, createItem, forceAllow)
     if (result ~= nil and result ~= false) or not LayeredPlacement.allowFloatingPlace() then
-        return result
+        return afterPickup(result)
     end
     if not isLayerDecor(self) or not (self.isHigh or self.isLow) or not square then
-        return result
+        return afterPickup(result)
     end
     -- Grid partner missing: remove whatever parts we can find (wall/object highs).
-    return cheatPickUpFloating(self, character, square, createItem)
+    return afterPickup(cheatPickUpFloating(self, character, square, createItem))
 end
 
 function ISMoveableSpriteProps:canPlaceMoveable(character, square, item)

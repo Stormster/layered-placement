@@ -1,7 +1,53 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.15"
+LayeredPlacement.VERSION = "1.6.16"
+
+--- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
+--- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
+--- works. Vanilla wall pickups hit the same flag; floating pickup puts those
+--- items in inventory more often, so mark them droppable after we create them.
+function LayeredPlacement.makeMoveableDroppable(item)
+    if not item or not instanceof(item, "Moveable") then
+        return false
+    end
+    if item:CanBeDroppedOnFloor() then
+        return true
+    end
+    -- Only multi-sprite ForceSingleItem items use spriteGrid + that flag.
+    if not item:getSpriteGrid() then
+        return false
+    end
+    if not getNumClassFields or not getClassField then
+        return false
+    end
+    local ok = pcall(function()
+        local n = getNumClassFields(item)
+        for i = 0, n - 1 do
+            local field = getClassField(item, i)
+            if field and field:getName() == "canBeDroppedOnFloor" then
+                field:setAccessible(true)
+                field:setBoolean(item, true)
+                return
+            end
+        end
+    end)
+    return ok and item:CanBeDroppedOnFloor()
+end
+
+--- Fix ForceSingleItem moveables already sitting in an inventory.
+function LayeredPlacement.fixInventoryMoveableDrops(container)
+    if not container or not container.getItems then
+        return
+    end
+    local items = container:getItems()
+    if not items then
+        return
+    end
+    for i = 0, items:size() - 1 do
+        LayeredPlacement.makeMoveableDroppable(items:get(i))
+    end
+end
 
 --- Feature flags (defaults on). Dedicated servers keep these defaults;
 --- clients override from Mod Options.
