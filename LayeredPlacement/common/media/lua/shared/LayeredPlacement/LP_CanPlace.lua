@@ -274,69 +274,6 @@ local function removePlacedInventoryItem(character, item, container)
     end
 end
 
---- Brush/cheat spawn: bypass vanilla placeMoveableInternal quirks on empty air tiles.
---- Never runs on a pure MP client — local AddSpecialObject does not persist.
-local function forceSpawnDecor(square, spriteName, item)
-    if not square or not spriteName then
-        return false
-    end
-    if not LayeredPlacement.canMutateWorld() then
-        return false
-    end
-    local spr = getSprite(spriteName)
-    if not spr then
-        return false
-    end
-    local obj = nil
-    local ok, err = pcall(function()
-        local tileType = spr:getType()
-        if tileType == IsoObjectType.lightswitch then
-            obj = IsoLightSwitch.new(getCell(), square, spr, square:getRoomID())
-            if obj.addLightSourceFromSprite then
-                obj:addLightSourceFromSprite()
-            end
-            if item and obj.getCustomSettingsFromItem then
-                obj:getCustomSettingsFromItem(item)
-            end
-        else
-            -- Match vanilla N/W WallOverlay place: IsoObject from IsoSprite.
-            obj = IsoObject.new(getCell(), square, spr)
-        end
-        if obj and item and GameEntityFactory then
-            if item.hasComponents and (not item:hasComponents()) and GameEntityFactory.CreateIsoEntityFromCellLoading then
-                GameEntityFactory.CreateIsoEntityFromCellLoading(obj)
-            end
-            if GameEntityFactory.TransferComponents then
-                GameEntityFactory.TransferComponents(item, obj)
-            end
-        end
-        square:AddSpecialObject(obj)
-        -- Apply and transmit battery state only after the light has a world
-        -- object index; pre-add transmission is discarded in multiplayer.
-        if obj and instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
-            -- Newly placed hanging lights are visibly lit by default; keep the
-            -- internal activation state and context-menu label consistent.
-            LayeredPlacement.preparePlacedLight(obj, true)
-        end
-        if isServer() and obj.transmitCompleteItemToClients then
-            obj:transmitCompleteItemToClients()
-        end
-        if square.RecalcProperties then
-            square:RecalcProperties()
-        end
-        if square.RecalcAllWithNeighbours then
-            square:RecalcAllWithNeighbours(true)
-        end
-        LayeredPlacement.markConstruction(square)
-        triggerEvent("OnObjectAdded", obj)
-    end)
-    if not ok then
-        LayeredPlacement.log("direct spawn failed: " .. tostring(err))
-        return false
-    end
-    return obj ~= nil
-end
-
 --- Count matching sprites so we can tell a real placement from one that was
 --- already there (stacking a second identical light on one tile).
 local function countSprite(square, spriteName)
@@ -356,6 +293,47 @@ local function countSprite(square, spriteName)
         end
     end
     return n
+end
+
+--- Brush/cheat spawn: bypass vanilla placeMoveableInternal quirks on empty air tiles.
+--- Never runs on a pure MP client — local AddSpecialObject does not persist.
+local function forceSpawnDecor(square, spriteName, item)
+    if not square or not spriteName then
+        return false
+    end
+    if not LayeredPlacement.canMutateWorld() then
+        return false
+    end
+    local before = countSprite(square, spriteName)
+    -- Prefer shared spawner (also used by multi-grid restore).
+    local obj = LayeredPlacement.spawnDecorSprite(square, spriteName)
+    if obj and item then
+        pcall(function()
+            if obj.getCustomSettingsFromItem and instanceof(obj, "IsoLightSwitch") then
+                obj:getCustomSettingsFromItem(item)
+            end
+            if GameEntityFactory then
+                if item.hasComponents and (not item:hasComponents())
+                    and GameEntityFactory.CreateIsoEntityFromCellLoading
+                then
+                    GameEntityFactory.CreateIsoEntityFromCellLoading(obj)
+                end
+                if GameEntityFactory.TransferComponents then
+                    GameEntityFactory.TransferComponents(item, obj)
+                end
+            end
+            if instanceof(obj, "IsoLightSwitch") and LayeredPlacement.preparePlacedLight then
+                LayeredPlacement.preparePlacedLight(obj, true)
+            end
+            if isServer() and obj.transmitCompleteItemToClients then
+                obj:transmitCompleteItemToClients()
+            end
+        end)
+    end
+    if countSprite(square, spriteName) > before then
+        return true
+    end
+    return false
 end
 
 --- Brush spawn: direct object create first (admin-brush style), vanilla as backup.
@@ -397,6 +375,50 @@ local function collectMultiPartItems(props, character, members, spriteGrid)
     return items
 end
 
+local function removeWorldSpriteObject(square, spriteName)
+    local obj = LayeredPlacement.findSpriteObject(square, spriteName)
+    if not obj or not square then
+        return
+    end
+    pcall(function()
+        triggerEvent("OnObjectAboutToBeRemoved", obj)
+        square:transmitRemoveItemFromSquare(obj)
+        if square.RecalcProperties then
+            square:RecalcProperties()
+        end
+    end)
+end
+
+local function tagPlacedMultiGrid(members, spriteGrid)
+    if not members or #members < 2 then
+        return
+    end
+    local parts = {}
+    local sX, sY, sZ
+    for i = 1, #members do
+        local m = members[i]
+        if m.square and m.sprite and m.sprite.getName and m.x ~= nil and m.y ~= nil then
+            if not sX then
+                sX = m.square:getX() - m.x
+                sY = m.square:getY() - m.y
+                sZ = m.square:getZ()
+            end
+            table.insert(parts, { n = m.sprite:getName(), x = m.x, y = m.y })
+        end
+    end
+    if not sX or #parts < 2 then
+        return
+    end
+    for i = 1, #members do
+        local m = members[i]
+        local obj = m.square and LayeredPlacement.findSpriteObject(m.square, m.sprite:getName())
+        if obj then
+            LayeredPlacement.tagMultiGridObject(obj, sX, sY, sZ, parts)
+            LayeredPlacement.markConstruction(m.square)
+        end
+    end
+end
+
 local function cheatPlaceFloating(props, character, square, origSpriteName)
     -- Pure MP clients must not spawn here — the cursor sends placeFloating to
     -- the server instead (timed actions often never start on fence/rail tiles).
@@ -422,12 +444,32 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
                 LayeredPlacement.log("cheat place: missing one of the multi-part items")
                 return false
             end
+            local placedMembers = {}
             for i, gridMember in ipairs(members) do
                 if placePart(props, gridMember.square, parts[i].item, gridMember.sprite:getName()) then
                     placed = placed + 1
-                    removePlacedInventoryItem(character, parts[i].item, parts[i].container)
+                    table.insert(placedMembers, {
+                        square = gridMember.square,
+                        spriteName = gridMember.sprite:getName(),
+                        item = parts[i].item,
+                        container = parts[i].container,
+                    })
                     LayeredPlacement.markConstruction(gridMember.square)
                 end
+            end
+            -- All-or-nothing: a half-light that loses its partner can't be picked up.
+            if placed > 0 and placed < #members then
+                for _, pm in ipairs(placedMembers) do
+                    removeWorldSpriteObject(pm.square, pm.spriteName)
+                end
+                LayeredPlacement.log("cheat place: rolled back partial multi-part place")
+                return false
+            end
+            for _, pm in ipairs(placedMembers) do
+                removePlacedInventoryItem(character, pm.item, pm.container)
+            end
+            if placed == #members then
+                tagPlacedMultiGrid(members, spriteGrid)
             end
         else
             local item, container = findPlaceItem(props, character, origSpriteName)
@@ -436,6 +478,7 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
                 return false
             end
             local anchor = spriteGrid:getAnchorSprite()
+            local placedMembers = {}
             for _, gridMember in ipairs(members) do
                 local gridItem = item
                 if gridMember.sprite ~= anchor then
@@ -443,11 +486,23 @@ local function cheatPlaceFloating(props, character, square, origSpriteName)
                 end
                 if placePart(props, gridMember.square, gridItem, gridMember.sprite:getName()) then
                     placed = placed + 1
+                    table.insert(placedMembers, {
+                        square = gridMember.square,
+                        spriteName = gridMember.sprite:getName(),
+                    })
                     LayeredPlacement.markConstruction(gridMember.square)
                 end
             end
-            if placed > 0 then
+            if placed > 0 and placed < #members then
+                for _, pm in ipairs(placedMembers) do
+                    removeWorldSpriteObject(pm.square, pm.spriteName)
+                end
+                LayeredPlacement.log("cheat place: rolled back partial ForceSingleItem place")
+                return false
+            end
+            if placed == #members then
                 removePlacedInventoryItem(character, item, container)
+                tagPlacedMultiGrid(members, spriteGrid)
             end
         end
     else
@@ -486,6 +541,25 @@ local function cheatPickUpFloating(props, character, square, createItem)
         return result
     end
     local obj, sprInstance = props:findOnSquare(square, props.spriteName)
+    if not obj and square and square.getObjects and props.sprite and props.sprite.getSpriteGrid then
+        local grid = props.sprite:getSpriteGrid()
+        if grid then
+            for gx = 0, grid:getWidth() - 1 do
+                for gy = 0, grid:getHeight() - 1 do
+                    local partSprite = grid:getSprite(gx, gy)
+                    if partSprite then
+                        obj, sprInstance = props:findOnSquare(square, partSprite:getName())
+                        if obj then
+                            break
+                        end
+                    end
+                end
+                if obj then
+                    break
+                end
+            end
+        end
+    end
     if not obj then
         return nil
     end
@@ -493,24 +567,33 @@ local function cheatPickUpFloating(props, character, square, createItem)
     if spriteGrid then
         -- Non-ForceSingleItem grids hand back one item per sprite, like vanilla.
         local perPartItem = createItem and not props.isForceSingleItem
+        local removed = 0
         local sX = square:getX() - spriteGrid:getSpriteGridPosX(props.sprite)
         local sY = square:getY() - spriteGrid:getSpriteGridPosY(props.sprite)
         local sZ = square:getZ()
+        -- If props.sprite isn't on this square (we matched another grid part),
+        -- recompute origin from the object we actually found.
+        local foundSpr = obj.getSprite and obj:getSprite()
+        if foundSpr and foundSpr.getSpriteGrid and foundSpr:getSpriteGrid() == spriteGrid then
+            sX = square:getX() - spriteGrid:getSpriteGridPosX(foundSpr)
+            sY = square:getY() - spriteGrid:getSpriteGridPosY(foundSpr)
+        end
         for gx = 0, spriteGrid:getWidth() - 1 do
             for gy = 0, spriteGrid:getHeight() - 1 do
                 local partSprite = spriteGrid:getSprite(gx, gy)
                 if partSprite then
-                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ)
+                    local partSq = LayeredPlacement.ensureGridSquare(sX + gx, sY + gy, sZ, true)
                     local partObj, partSpr = props:findOnSquare(partSq, partSprite:getName())
                     if partObj then
                         props:pickUpMoveableInternal(
                             character, partSq, partObj, partSpr, partSprite:getName(), perPartItem, true
                         )
+                        removed = removed + 1
                     end
                 end
             end
         end
-        if createItem and props.isForceSingleItem then
+        if createItem and props.isForceSingleItem and removed > 0 then
             local anchor = spriteGrid:getAnchorSprite()
             local item = props:instanceItem(anchor and anchor:getName() or props.spriteName)
             if item then
@@ -524,9 +607,12 @@ local function cheatPickUpFloating(props, character, square, createItem)
         if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
             ISMoveableCursor.clearCacheForAllPlayers()
         end
-        LayeredPlacement.log("picked up floating multi decor")
-        LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
-        return {}
+        if removed > 0 then
+            LayeredPlacement.log("picked up floating multi decor parts=" .. tostring(removed))
+            LayeredPlacement.fixInventoryMoveableDrops(character:getInventory())
+            return {}
+        end
+        return nil
     end
     local item = props:pickUpMoveableInternal(character, square, obj, sprInstance, props.spriteName, createItem, true)
     if item then
@@ -872,6 +958,7 @@ function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
         if _canPickUpMoveable(self, character, square, object) then
             return true
         end
+        -- Incomplete multi-tile (partner vanished on reload): still allow pickup.
         return self:canPickUpMoveableInternal(character, square, object, false)
     end
     if LayeredPlacement.allowFloatingPlace() and isLayerDecor(self) and self.isMultiSprite then
@@ -897,6 +984,8 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
     end
     if isFloatingObjectDecor(self) and square then
         local obj = self:findOnSquare(square, self.spriteName)
+        -- Always use the incomplete-grid recovery path for hanging multis.
+        -- Vanilla forceAllow still requires every grid partner to exist.
         if forceAllow or self:canPickUpMoveable(character, square, obj) then
             return afterPickup(cheatPickUpFloating(self, character, square, createItem))
         end

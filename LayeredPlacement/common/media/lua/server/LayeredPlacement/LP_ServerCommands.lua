@@ -87,7 +87,7 @@ local function onPickUpFloating(player, args)
         LayeredPlacement.log("server pickUpFloating: out of reach")
         return
     end
-    props:pickUpMoveable(player, square, true)
+    props:pickUpMoveable(player, square, true, true)
     LayeredPlacement.markConstruction(square)
     if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
         ISMoveableCursor.clearCacheForAllPlayers()
@@ -182,6 +182,9 @@ local function onLoadSquare(square)
             end
         end
     end
+    -- Rebuild missing halves of multi-tile hanging lights (rail/void partners
+    -- often fail to persist across chunk unload / server restart).
+    LayeredPlacement.restoreMultiGridOnSquare(square)
 end
 
 Events.LoadGridsquare.Add(onLoadSquare)
