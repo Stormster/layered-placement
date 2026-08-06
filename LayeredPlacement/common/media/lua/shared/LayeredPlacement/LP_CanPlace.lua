@@ -789,16 +789,27 @@ local function cheatPickUpFloating(props, character, square, createItem)
             LayeredPlacement.log("floating pickup aborted: could not create ForceSingleItem")
             return nil
         end
+        -- Where the footprint starts comes from the sprite's own grid slot; a
+        -- recorded origin can be stale. The recorded part names still win, since
+        -- they survive lit-sprite swaps and missing halves.
+        local ox, oy, oz = LayeredPlacement.gridOriginOf(obj)
+        if ox == nil then
+            ox, oy, oz = grid.ox, grid.oy, grid.oz
+        end
         local removed = 0
         for i = 1, #grid.parts do
             local part = grid.parts[i]
             if part and part.n and part.x ~= nil and part.y ~= nil then
                 local partSq = LayeredPlacement.ensureGridSquare(
-                    grid.ox + part.x, grid.oy + part.y, grid.oz, true
+                    ox + part.x, oy + part.y, oz, true
                 )
                 local partObj = LayeredPlacement.findSpriteObject(partSq, part.n)
                 if not partObj then
                     partObj = findFloatingPartOnSquare(props, partSq)
+                end
+                if partObj and LayeredPlacement.foreignGridPart(partObj, ox, oy, oz) then
+                    -- Another copy of the same light hung alongside this one.
+                    partObj = nil
                 end
                 if partObj then
                     if removeFloatingPart(props, character, partSq, partObj, nil, part.n, perPartItem) then
