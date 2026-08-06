@@ -1,5 +1,7 @@
 require "LayeredPlacement/LP_Shared"
 
+local SERVER_NOTE = " This is a personal preference. A server can disable this feature for everyone in Sandbox settings."
+
 local OPTIONS = {
     {
         id = "layeredPlace",
@@ -82,18 +84,24 @@ local function bindOptionCallbacks(opts)
     end
 end
 
-local options = PZAPI.ModOptions:getOptions(LayeredPlacement.MOD_ID)
-if not options then
-    options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
-    for _, def in ipairs(OPTIONS) do
-        options:addTickBox(def.id, def.label, true, def.tooltip)
+--- Without the Mod Options API every feature simply stays at its default (on,
+--- unless Sandbox says otherwise) instead of erroring out of this whole file.
+if PZAPI and PZAPI.ModOptions then
+    local options = PZAPI.ModOptions:getOptions(LayeredPlacement.MOD_ID)
+    if not options then
+        options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
+        for _, def in ipairs(OPTIONS) do
+            options:addTickBox(def.id, def.label, true, def.tooltip .. SERVER_NOTE)
+        end
     end
+
+    bindOptionCallbacks(options)
+
+    Events.OnMainMenuEnter.Add(loadFromDiskThenApply)
+    Events.OnGameStart.Add(loadFromDiskThenApply)
+else
+    LayeredPlacement.log("Mod Options API unavailable; using Sandbox settings only")
 end
-
-bindOptionCallbacks(options)
-
-Events.OnMainMenuEnter.Add(loadFromDiskThenApply)
-Events.OnGameStart.Add(loadFromDiskThenApply)
 
 --- Small Lights / other ForceSingleItem multis can't Drop until canBeDroppedOnFloor
 --- is flipped. Fix anything already sitting in the player inventory.

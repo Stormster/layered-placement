@@ -168,6 +168,16 @@ local function isFloatingObjectDecor(props)
     return LayeredPlacement.isFloatingDecor(props)
 end
 
+--- Decor whose pickup may fall back to our recovery path when vanilla gives up
+--- (missing multi-tile partner, stacked wall decor). Stacked wall decor belongs
+--- to layeredPlace, hanging decor to floatingPlace — the same split as placing.
+local function allowRecoveryPickup(props)
+    if LayeredPlacement.allowFloatingPlace() then
+        return true
+    end
+    return LayeredPlacement.allowLayeredPlace() and LayeredPlacement.isWallDecor(props)
+end
+
 --- The cheat path skips pathing and adjacency, so it needs its own range gate.
 --- Allow one Z of difference so catwalk → ground-wall aims still count.
 local function isFloatingDecorInReach(props, character, square)
@@ -1019,6 +1029,19 @@ local function placeWallDecor(props, character, square, origSpriteName)
         return false
     end
 
+    -- Co-op hosts and dedicated players are both pure clients: the timed action
+    -- completes only on their machine, so a local object would vanish on rejoin.
+    -- Hand the whole placement (object + inventory) to the server instead.
+    if not LayeredPlacement.canMutateWorld() then
+        if not findPlaceItem(props, character, origSpriteName) then
+            LayeredPlacement.log("wall decor place: no matching item in inventory")
+            return false
+        end
+        return LayeredPlacement.requestLayeredPlace(
+            character, square, spriteName, origSpriteName, props.cursorFacing
+        )
+    end
+
     local function finishOk(item, how)
         removePlacedInventoryItem(character, item)
         if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
@@ -1089,35 +1112,33 @@ local function placeWallDecor(props, character, square, origSpriteName)
     local isNorthOrWest = facing == "N" or facing == "W"
     local isEastOrSouth = facing == "E" or facing == "S"
     local isOverlay = props.type == "WallOverlay"
-    local canPersist = LayeredPlacement.canMutateWorld()
 
-    -- Prefer vanilla internals first when we can persist (server/SP).
-    if canPersist then
-        pcall(function()
-            props:placeMoveableInternal(square, item, spriteName)
-        end)
-        if appeared() then
-            return finishOk(item, "vanilla")
-        end
+    -- Prefer vanilla internals first (we only get here in singleplayer or on the
+    -- server, so anything created below persists).
+    pcall(function()
+        props:placeMoveableInternal(square, item, spriteName)
+    end)
+    if appeared() then
+        return finishOk(item, "vanilla")
     end
 
     if isOverlay and isEastOrSouth and wall then
-        -- E/S: attach (transmitUpdatedSpriteToServer is valid on MP clients).
+        -- E/S: attach the overlay to the wall on this square.
         if attachWallOverlay(wall, spriteName) and appeared() then
             return finishOk(item, "wall-attached")
         end
-        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned-same-side")
         end
     elseif isOverlay and isNorthOrWest then
         -- N/W: free object on the aimed square only — never attach to the
         -- adjacent wall (that lands in the other room).
-        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned-aimed")
         end
     else
         -- Plain WallObject / WindowObject: free object on aimed square.
-        if canPersist and forceSpawnDecor(square, spriteName, item) and appeared() then
+        if forceSpawnDecor(square, spriteName, item) and appeared() then
             return finishOk(item, "spawned")
         end
     end
@@ -1218,7 +1239,7 @@ function ISMoveableSpriteProps:canPickUpMoveable(character, square, object)
         ensureMultiSpriteSquares(self, square)
     end
     local ok = _canPickUpMoveable(self, character, square, object)
-    if ok or not LayeredPlacement.allowFloatingPlace() then
+    if ok or not allowRecoveryPickup(self) then
         return ok
     end
     -- Wall/object highs on railings: allow pickup without full grid partners.
@@ -1251,7 +1272,7 @@ function ISMoveableSpriteProps:pickUpMoveable(character, square, createItem, for
         ensureMultiSpriteSquares(self, square)
     end
     local result = _pickUpMoveable(self, character, square, createItem, forceAllow)
-    if (result ~= nil and result ~= false) or not LayeredPlacement.allowFloatingPlace() then
+    if (result ~= nil and result ~= false) or not allowRecoveryPickup(self) then
         return afterPickup(result)
     end
     if not isLayerDecor(self) or not (self.isHigh or self.isLow) or not square then

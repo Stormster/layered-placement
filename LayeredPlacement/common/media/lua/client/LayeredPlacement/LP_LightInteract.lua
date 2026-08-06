@@ -232,7 +232,7 @@ local function onPreFill(player, context, worldobjects, test)
     if ISWorldObjectContextMenuLogic and ISWorldObjectContextMenuLogic.fetch then
         ISWorldObjectContextMenuLogic.fetch(fetch, light, player, true)
     end
-    LayeredPlacement.log("prefill light " .. tostring(light:getSprite() and light:getSprite():getName()))
+    LayeredPlacement.trace("prefill light " .. tostring(light:getSprite() and light:getSprite():getName()))
 end
 
 --- Always expose Turn On/Off for high lights in reach (vanilla often skips when
@@ -273,7 +273,7 @@ local function onFill(player, context, worldobjects, test)
     -- Guarantee a working toggle even when canSwitchLight was false.
     if not contextHasToggle(context) then
         addDirectToggle(context, light, player, worldobjects)
-        LayeredPlacement.log("fill direct toggle " .. tostring(title))
+        LayeredPlacement.trace("fill direct toggle " .. tostring(title))
     end
 end
 

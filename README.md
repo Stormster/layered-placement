@@ -15,9 +15,25 @@ In vanilla Project Zomboid, decorating with Move Furniture is limited: lights, p
 - Toggle floating or railing-mounted lights without the railing stealing your clicks  
 - Keep normal floor stacking (crates, tables, and so on) and the usual skill / tool requirements  
 
-Each feature has its own toggle in Mod Options, so players can enable only what they want.
+Server owners choose which features are allowed for everyone in Sandbox Options. Players can still turn allowed features off for themselves in Mod Options, but cannot enable a feature the server has disabled.
 
 Compatible with **Build 42.20+**, safe to add mid-save, and designed for **multiplayer** (enable on the server and all clients).
+
+---
+
+## Multiplayer setup
+
+The mod must be enabled **on the server as well as on every client**, in singleplayer, co-op, and on a dedicated server alike. Hosting co-op counts: the host's game and the co-op server are separate processes, so the server has to load the mod too (Host → Manage settings → Mods, plus the mod list in the co-op save's settings).
+
+The reason is that furniture Place and Pickup only ever finish on the client, and a client cannot create a world object that survives a rejoin. When you stack decor on an occupied tile, the client asks the server to do it; if the server does not have the mod, nothing happens and you keep the item.
+
+If placement behaves differently in multiplayer than in singleplayer, the logs say which side stopped:
+
+- Client: `%UserProfile%\Zomboid\console.txt` (and `Zomboid\Logs\`)
+- Dedicated server: `Zomboid\server-console.txt` on the machine running the server
+- Every mod line is prefixed with `[LayeredPlacement]`, starting with a load line naming the version and whether that process writes to the world locally or through the server
+
+Useful lines to look for: `client requested placeLayered …` (client asked), `server placeLayered ok …` (server did it), `server placeLayered refused … (reason)`, and `no server reply for … — is Layered Placement enabled and up to date on the server?`.
 
 ---
 

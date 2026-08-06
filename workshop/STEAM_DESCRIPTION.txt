@@ -2,8 +2,8 @@ Decorate with Pickup/Place Furniture without using Brush Tool but the way the ad
 
 Hang lights over tables and posters, put lamps on railings and catwalks, and turn them on/off without the railing eating your clicks. Outdoor and railing lights use battery when there is no building power.
 
-Separate Mod Options toggles for each feature. Crates/tables still stack normally. Skills and tools still matter.
+Server owners choose allowed features in Sandbox Options. Players can turn allowed features off for themselves in Mod Options. Crates/tables still stack normally. Skills and tools still matter.
 
-B42.20+. Safe mid-save. Multiplayer supported — enable on server and all clients, and please report any issues.
+B42.20+. Safe mid-save. Multiplayer supported — enable on the server and all clients. Hosting co-op counts as a server, so enable it in the co-op server's mod list too, or stacking on occupied tiles will do nothing.
 
 Do not reupload. Subscribe on Workshop for updates.
