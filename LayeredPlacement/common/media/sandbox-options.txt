@@ -1,0 +1,41 @@
+VERSION = 1,
+
+option LayeredPlacement.LayeredPlace
+{
+    type = boolean,
+    default = true,
+    page = LayeredPlacement,
+    translation = LayeredPlacement_LayeredPlace,
+}
+
+option LayeredPlacement.FloatingPlace
+{
+    type = boolean,
+    default = true,
+    page = LayeredPlacement,
+    translation = LayeredPlacement_FloatingPlace,
+}
+
+option LayeredPlacement.MeshFloorAim
+{
+    type = boolean,
+    default = true,
+    page = LayeredPlacement,
+    translation = LayeredPlacement_MeshFloorAim,
+}
+
+option LayeredPlacement.CatwalkReach
+{
+    type = boolean,
+    default = true,
+    page = LayeredPlacement,
+    translation = LayeredPlacement_CatwalkReach,
+}
+
+option LayeredPlacement.LightInteract
+{
+    type = boolean,
+    default = true,
+    page = LayeredPlacement,
+    translation = LayeredPlacement_LightInteract,
+}

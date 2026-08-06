@@ -1,11 +1,46 @@
 require "LayeredPlacement/LP_Shared"
 require "Moveables/ISMoveableSpriteProps"
 
---- Server-side floating decor place/pickup for pure MP clients.
---- Client brush path sends these commands so objects are created authoritatively
---- (client AddSpecialObject ghosts vanish on rejoin).
+--- Server-side decor place/pickup for pure MP clients (dedicated players and
+--- co-op hosts alike). Moveable timed actions only ever complete on the client,
+--- so anything the client cannot persist is requested here instead.
 
-local MODULE = "LayeredPlacement"
+local MODULE = LayeredPlacement.MOD_ID
+
+--- Tell the requesting client what happened. Silence is the one outcome we
+--- cannot explain later, so every handler answers exactly once.
+local function reply(player, request, args, ok, reason)
+    if not sendServerCommand or not player then
+        return
+    end
+    sendServerCommand(player, MODULE, "requestResult", {
+        request = request,
+        x = args and args.x,
+        y = args and args.y,
+        z = args and args.z,
+        spriteName = args and args.spriteName,
+        ok = ok and true or false,
+        reason = reason,
+    })
+end
+
+--- Non-members must not decorate someone else's safehouse. Mirrors the check
+--- ISMoveablesAction:isValid runs on the client for normal place/pickup.
+local function blockedBySafehouse(player, square)
+    if not SafeHouse or not SafeHouse.isSafeHouse or not player or not square then
+        return false
+    end
+    local blocked = false
+    pcall(function()
+        if SafeHouse.isSafeHouse(square, player:getUsername(), true)
+            and SafeHouse.isSafehouseAllowLoot
+            and not SafeHouse.isSafehouseAllowLoot(square, player)
+        then
+            blocked = true
+        end
+    end)
+    return blocked
+end
 
 local function squareFromArgs(args)
     if not args or args.x == nil or args.y == nil or args.z == nil then
@@ -37,69 +72,162 @@ local function propsFromArgs(args)
     return props
 end
 
-local function onPlaceFloating(player, args)
+--- "floating" = hanging Object decor (lamps, string lights) owned by the
+--- railing/catwalk helper. "wall" = WallObject/WallOverlay/WindowObject decor
+--- owned by the stacking helper. Each answers to its own Sandbox option.
+local function decorKind(props)
+    if LayeredPlacement.isHangingDecor(props) then
+        return "floating", "floatingPlace"
+    end
+    if LayeredPlacement.isWallDecor(props) then
+        return "wall", "layeredPlace"
+    end
+    return nil, nil
+end
+
+--- Shared gate for every world-action command. Returns props + square when the
+--- request is allowed, or nil plus the reason to log and send back.
+local function resolveRequest(request, player, args, allowedKinds)
     if not player or not instanceof(player, "IsoPlayer") then
-        return
+        return nil, nil, "no player"
+    end
+    if args and args.version and args.version ~= LayeredPlacement.VERSION then
+        LayeredPlacement.log("version mismatch: client " .. tostring(args.version)
+            .. " vs server " .. LayeredPlacement.VERSION)
     end
     local square = squareFromArgs(args)
     local props = propsFromArgs(args)
     if not square or not props then
-        LayeredPlacement.log("server placeFloating: bad square/props")
-        return
+        return nil, nil, "bad square/props"
     end
-    if not LayeredPlacement.isFloatingDecor(props) then
-        LayeredPlacement.log("server placeFloating: not floating decor")
-        return
+    local kind, option = decorKind(props)
+    if not kind or not allowedKinds[kind] then
+        return nil, nil, "not supported decor for " .. request
     end
-    if not LayeredPlacement.withinBrushReach(player, square) then
-        LayeredPlacement.log("server placeFloating: out of reach")
-        return
+    if not LayeredPlacement.serverAllows(option) then
+        return nil, nil, "disabled by Sandbox settings"
+    end
+    -- Hanging decor may be reached from a catwalk one level up; wall decor keeps
+    -- the same-floor rule the client-side action uses.
+    local inReach
+    if kind == "floating" then
+        inReach = LayeredPlacement.withinBrushReach(player, square)
+    else
+        inReach = LayeredPlacement.withinReach(player, square, LayeredPlacement.REACH_DIST)
+    end
+    if not inReach then
+        return nil, nil, "out of reach"
+    end
+    if blockedBySafehouse(player, square) then
+        return nil, nil, "blocked by safehouse"
+    end
+    return props, square, nil
+end
+
+local function finish(request, player, args, ok, detail)
+    LayeredPlacement.log("server " .. request .. " " .. (ok and "ok" or "refused")
+        .. " @ " .. tostring(args and args.x) .. "," .. tostring(args and args.y)
+        .. "," .. tostring(args and args.z)
+        .. " sprite=" .. tostring(args and args.spriteName)
+        .. (detail and (" (" .. detail .. ")") or ""))
+    reply(player, request, args, ok, detail)
+end
+
+local PLACE_FLOATING_KINDS = { floating = true }
+local PICKUP_KINDS = { floating = true, wall = true }
+local PLACE_LAYERED_KINDS = { wall = true }
+
+local function onPlaceFloating(player, args)
+    local props, square, reason = resolveRequest("placeFloating", player, args, PLACE_FLOATING_KINDS)
+    if not props then
+        return finish("placeFloating", player, args, false, reason)
     end
     -- origSpriteName = inventory item; spriteName/props = rotated face being placed.
     local orig = args.origSpriteName or args.spriteName
-    local ok = props:placeMoveable(player, square, orig)
-    if ok then
-        LayeredPlacement.markConstruction(square)
-        LayeredPlacement.log("server placeFloating ok @ "
-            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z)
-            .. " sprite=" .. tostring(args.spriteName)
-            .. " face=" .. tostring(args.cursorFacing))
-    else
-        LayeredPlacement.log("server placeFloating failed")
+    local ok, result = pcall(function()
+        return props:placeMoveable(player, square, orig)
+    end)
+    if not ok then
+        return finish("placeFloating", player, args, false, "error: " .. tostring(result))
     end
+    if not result then
+        return finish("placeFloating", player, args, false, "nothing placed; item kept")
+    end
+    LayeredPlacement.markConstruction(square)
+    finish("placeFloating", player, args, true, "face=" .. tostring(args.cursorFacing))
 end
 
-local function onPickUpFloating(player, args)
-    if not player or not instanceof(player, "IsoPlayer") then
-        return
+--- Find the inventory item this request would consume. Also the idempotency
+--- guard: once the item is gone, a duplicate or replayed request does nothing.
+local function findRequestItem(props, player, orig)
+    if props.isMultiSprite then
+        local grid = props.sprite and props.sprite:getSpriteGrid()
+        local max = grid and grid:getSpriteCount() or 1
+        local label = props.isForceSingleItem
+            and (props.name .. " (1/1)")
+            or (props.name .. " (1/" .. tostring(max) .. ")")
+        return props:findInInventoryMultiSprite(player, label)
     end
-    local square = squareFromArgs(args)
-    local props = propsFromArgs(args)
-    if not square or not props then
-        LayeredPlacement.log("server pickUpFloating: bad square/props")
-        return
+    return props:findInInventory(player, orig)
+end
+
+--- Authoritative layered WallObject/WallOverlay placement. Vanilla refuses the
+--- occupied tile (wall cabinet over a fridge, second poster on one wall), and a
+--- client cannot persist the object it would create, so the server does both the
+--- placement and the inventory removal here.
+local function onPlaceLayered(player, args)
+    local props, square, reason = resolveRequest("placeLayered", player, args, PLACE_LAYERED_KINDS)
+    if not props then
+        return finish("placeLayered", player, args, false, reason)
     end
-    if not LayeredPlacement.isFloatingDecor(props) then
-        LayeredPlacement.log("server pickUpFloating: not floating decor")
-        return
+    if not LayeredPlacement.hasPlaceRequirements(props, player) then
+        return finish("placeLayered", player, args, false, "missing skill or tool")
     end
-    if not LayeredPlacement.withinBrushReach(player, square) then
-        LayeredPlacement.log("server pickUpFloating: out of reach")
-        return
+
+    local orig = args.origSpriteName or args.spriteName
+    if not findRequestItem(props, player, orig) then
+        return finish("placeLayered", player, args, false, "item already gone or unavailable")
     end
-    -- Idempotent by object presence: duplicate/late requests must not report
-    -- success or perform any inventory work after the first request removed it.
-    local result = props:pickUpMoveable(player, square, true, true)
-    if result == nil or result == false then
-        LayeredPlacement.log("server pickUpFloating ignored: object already gone or unavailable")
-        return
+
+    local ok, err = pcall(function()
+        props:placeMoveable(player, square, orig, true)
+    end)
+    if not ok then
+        return finish("placeLayered", player, args, false, "error: " .. tostring(err))
+    end
+    -- Vanilla placeMoveable returns nil either way, so judge by the item: it is
+    -- only removed once the object is actually in the world.
+    if findRequestItem(props, player, orig) then
+        return finish("placeLayered", player, args, false, "nothing placed; item kept")
     end
     LayeredPlacement.markConstruction(square)
     if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
         ISMoveableCursor.clearCacheForAllPlayers()
     end
-    LayeredPlacement.log("server pickUpFloating @ "
-        .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
+    finish("placeLayered", player, args, true, "face=" .. tostring(args.cursorFacing))
+end
+
+--- Pickup for both decor families: a client has no authority to delete a world
+--- object, and vanilla's own pickup gives up on stacked/partner-less decor.
+local function onPickUpFloating(player, args)
+    local props, square, reason = resolveRequest("pickUpFloating", player, args, PICKUP_KINDS)
+    if not props then
+        return finish("pickUpFloating", player, args, false, reason)
+    end
+    local ok, result = pcall(function()
+        return props:pickUpMoveable(player, square, true, true)
+    end)
+    if not ok then
+        return finish("pickUpFloating", player, args, false, "error: " .. tostring(result))
+    end
+    if result == nil or result == false then
+        return finish("pickUpFloating", player, args, false, "object already gone or unavailable")
+    end
+    LayeredPlacement.markConstruction(square)
+    if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
+        ISMoveableCursor.clearCacheForAllPlayers()
+    end
+    finish("pickUpFloating", player, args, true, nil)
 end
 
 local function lightFromArgs(square, args)
@@ -137,9 +265,17 @@ local function onSetLightState(player, args)
     if not player or not instanceof(player, "IsoPlayer") then
         return
     end
+    if not LayeredPlacement.serverAllows("lightInteract") then
+        LayeredPlacement.log("server setLightState rejected: disabled by Sandbox settings")
+        return
+    end
     local square = squareFromArgs(args)
     if not square or not LayeredPlacement.withinBrushReach(player, square) then
         LayeredPlacement.log("server setLightState: bad square/out of reach")
+        return
+    end
+    if blockedBySafehouse(player, square) then
+        LayeredPlacement.log("server setLightState: blocked by safehouse")
         return
     end
     local light = lightFromArgs(square, args)
@@ -161,6 +297,8 @@ local function onClientCommand(module, command, player, args)
     end
     if command == "placeFloating" then
         onPlaceFloating(player, args)
+    elseif command == "placeLayered" then
+        onPlaceLayered(player, args)
     elseif command == "pickUpFloating" then
         onPickUpFloating(player, args)
     elseif command == "setLightState" then
@@ -171,9 +309,11 @@ end
 Events.OnClientCommand.Add(onClientCommand)
 
 --- Restore marked floating lights when the authoritative world square loads.
---- Client-only restoration cannot make the state survive a server restart.
+--- This file also loads on clients (vanilla puts gameplay code under server/),
+--- so skip it there: a client re-applying light state on every chunk load only
+--- fights the server copy and floods it with sync packets.
 local function onLoadSquare(square)
-    if not square or not square.getObjects then
+    if not square or not square.getObjects or not LayeredPlacement.canMutateWorld() then
         return
     end
     local objects = square:getObjects()
@@ -197,4 +337,4 @@ local function onLoadSquare(square)
 end
 
 Events.LoadGridsquare.Add(onLoadSquare)
-LayeredPlacement.log("server commands ready")
+LayeredPlacement.log("world-action handlers ready (" .. LayeredPlacement.environment() .. ")")

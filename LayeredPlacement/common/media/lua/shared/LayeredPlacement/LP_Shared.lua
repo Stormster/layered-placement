@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.22"
+LayeredPlacement.VERSION = "1.6.24"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -266,8 +266,8 @@ function LayeredPlacement.restoreMultiGridOnSquare(square)
     end
 end
 
---- Feature flags (defaults on). Dedicated servers keep these defaults;
---- clients override from Mod Options.
+--- Per-player feature preferences (defaults on). Sandbox Options set the
+--- server/world ceiling; clients may still opt out through Mod Options.
 LayeredPlacement.options = LayeredPlacement.options or {
     layeredPlace = true,   -- lights over furniture/posters, multiple highs, wall decor together
     floatingPlace = true,  -- railings / catwalks / wall lamps without a solid wall
@@ -276,16 +276,38 @@ LayeredPlacement.options = LayeredPlacement.options or {
     lightInteract = true,  -- easier turn on/off and right-click for railing lamps
 }
 
+--- Support-facing log: one line per real event (boot, place, pickup, server
+--- command, rejection). Always printed so a player can send console.txt without
+--- launching the game in debug mode.
 function LayeredPlacement.log(msg)
-    if getDebug and getDebug() then
-        print("[LayeredPlacement] " .. tostring(msg))
+    print("[LayeredPlacement] " .. tostring(msg))
+end
+
+--- Verbose diagnostics for paths that run every render frame or every context
+--- menu build. Debug-only: always printing these floods console.txt.
+LayeredPlacement.DEBUG = false
+
+function LayeredPlacement.trace(msg)
+    if LayeredPlacement.DEBUG or (getDebug and getDebug()) then
+        LayeredPlacement.log(msg)
     end
+end
+
+function LayeredPlacement.environment()
+    if isServer() then
+        return "server"
+    end
+    if isClient() then
+        return "client"
+    end
+    return "singleplayer"
 end
 
 --- True when this process may create/persist world objects.
 --- Pure MP clients must not AddSpecialObject locally — those ghosts vanish on
---- rejoin while the inventory remove already synced. SP and servers (including
---- listen-server hosts, who are both client+server) may mutate the world.
+--- rejoin while the inventory remove already synced. A co-op host runs the
+--- server as its own process, so the host's game is a pure client too: only
+--- singleplayer and the server process may mutate the world.
 function LayeredPlacement.canMutateWorld()
     if isClient() and not isServer() then
         return false
@@ -303,42 +325,150 @@ function LayeredPlacement.markConstruction(square)
         buildUtil.setHaveConstruction(square, true)
     end
 end
---- Ask the server to place/pick floating decor (MP clients only).
---- Returns true when a command was sent (caller should treat as handled).
+
+--- Requests we sent to the server and have not heard back about. A missing
+--- reply almost always means the mod is not enabled on the server, which is
+--- otherwise a completely silent failure for the player.
+local pendingRequests = {}
+local pendingCount = 0
+local REPLY_TIMEOUT_MS = 8000
+
+local function nowMs()
+    if getTimestampMs then
+        return getTimestampMs()
+    end
+    return 0
+end
+
+local function notePending(command, square, spriteName)
+    if not square then
+        return
+    end
+    local key = command .. "|" .. tostring(square:getX()) .. "," .. tostring(square:getY())
+        .. "," .. tostring(square:getZ()) .. "|" .. tostring(spriteName)
+    if not pendingRequests[key] then
+        pendingCount = pendingCount + 1
+    end
+    pendingRequests[key] = nowMs()
+    return key
+end
+
+local function clearPending(command, args)
+    if not args then
+        return
+    end
+    local key = command .. "|" .. tostring(args.x) .. "," .. tostring(args.y)
+        .. "," .. tostring(args.z) .. "|" .. tostring(args.spriteName)
+    if pendingRequests[key] then
+        pendingRequests[key] = nil
+        pendingCount = pendingCount - 1
+    end
+end
+
+local function watchPendingRequests()
+    if pendingCount <= 0 then
+        return
+    end
+    local now = nowMs()
+    for key, sent in pairs(pendingRequests) do
+        if now - sent > REPLY_TIMEOUT_MS then
+            pendingRequests[key] = nil
+            pendingCount = pendingCount - 1
+            LayeredPlacement.log("no server reply for " .. tostring(key)
+                .. " — is Layered Placement enabled and up to date on the server?")
+        end
+    end
+end
+
+local function onServerReply(module, command, args)
+    if module ~= LayeredPlacement.MOD_ID or command ~= "requestResult" then
+        return
+    end
+    clearPending(tostring(args and args.request), args)
+    if args and args.ok then
+        LayeredPlacement.log("server confirmed " .. tostring(args.request)
+            .. " @ " .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z))
+    else
+        LayeredPlacement.log("server refused " .. tostring(args and args.request)
+            .. ": " .. tostring(args and args.reason or "unknown"))
+    end
+end
+
+if Events and Events.OnServerCommand and Events.OnTick then
+    Events.OnServerCommand.Add(onServerReply)
+    Events.OnTick.Add(watchPendingRequests)
+end
+
+--- Send one world-action request to the authoritative server. Pure MP clients
+--- only; returns true when the command went out so the caller stops here.
 --- spriteName must be the *current facing* sprite (what the ghost shows);
---- origSpriteName is for inventory lookup.
-function LayeredPlacement.requestFloatingWorldAction(character, square, spriteName, mode, origSpriteName, cursorFacing)
+--- origSpriteName is for the server-side inventory lookup.
+local function requestWorldAction(command, character, square, spriteName, origSpriteName, cursorFacing)
     if LayeredPlacement.canMutateWorld() then
         return false
     end
-    if not character or not square or not spriteName then
+    if not character or not square or not spriteName or not sendClientCommand then
         return false
     end
-    if not sendClientCommand then
-        return false
-    end
-    local cmd = (mode == "pickup") and "pickUpFloating" or "placeFloating"
-    sendClientCommand(character, "LayeredPlacement", cmd, {
+    sendClientCommand(character, LayeredPlacement.MOD_ID, command, {
         x = square:getX(),
         y = square:getY(),
         z = square:getZ(),
         spriteName = spriteName,
         origSpriteName = origSpriteName or spriteName,
         cursorFacing = cursorFacing,
+        version = LayeredPlacement.VERSION,
     })
-    LayeredPlacement.log("client requested " .. cmd .. " @ "
+    notePending(command, square, spriteName)
+    LayeredPlacement.log("client requested " .. command .. " @ "
         .. tostring(square:getX()) .. "," .. tostring(square:getY()) .. "," .. tostring(square:getZ())
         .. " sprite=" .. tostring(spriteName)
         .. " face=" .. tostring(cursorFacing))
     return true
 end
 
-local function flag(name)
-    local opts = LayeredPlacement.options
-    if not opts then
+--- Ask the server to place/pick floating decor (MP clients only).
+function LayeredPlacement.requestFloatingWorldAction(character, square, spriteName, mode, origSpriteName, cursorFacing)
+    local command = (mode == "pickup") and "pickUpFloating" or "placeFloating"
+    return requestWorldAction(command, character, square, spriteName, origSpriteName, cursorFacing)
+end
+
+--- Ask the server to perform a layered wall-object place. Timed actions only
+--- complete on the client, so the occupied-tile override has no authority in
+--- co-op or on a dedicated server: the server has to do the work. Its inventory
+--- lookup keeps duplicate or replayed requests idempotent.
+function LayeredPlacement.requestLayeredPlace(character, square, spriteName, origSpriteName, cursorFacing)
+    return requestWorldAction("placeLayered", character, square, spriteName, origSpriteName, cursorFacing)
+end
+
+local SANDBOX_OPTION_NAMES = {
+    layeredPlace = "LayeredPlace",
+    floatingPlace = "FloatingPlace",
+    meshFloorAim = "MeshFloorAim",
+    catwalkReach = "CatwalkReach",
+    lightInteract = "LightInteract",
+}
+
+--- Missing values mean enabled so old saves and main-menu contexts retain the
+--- behavior they had before server permissions were added.
+function LayeredPlacement.serverAllows(name)
+    local optionName = SANDBOX_OPTION_NAMES[name]
+    if not optionName then
+        return false
+    end
+    local vars = SandboxVars and SandboxVars.LayeredPlacement
+    if not vars or vars[optionName] == nil then
         return true
     end
-    return opts[name] ~= false
+    return vars[optionName] ~= false
+end
+
+local function flag(name)
+    local opts = LayeredPlacement.options
+    if opts and opts[name] == false then
+        return false
+    end
+    return LayeredPlacement.serverAllows(name)
 end
 
 function LayeredPlacement.allowLayeredPlace()
@@ -1041,7 +1171,7 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
 
     local atPlayer = findBestSquareAtPlayerZ(cell, x, y, pz, aimMode)
     if atPlayer then
-        LayeredPlacement.log(
+        LayeredPlacement.trace(
             "float Z " .. tostring(square:getZ())
                 .. " -> " .. tostring(pz)
                 .. " @" .. tostring(atPlayer:getX()) .. "," .. tostring(atPlayer:getY())
@@ -1053,3 +1183,7 @@ function LayeredPlacement.resolveFloatingSquare(character, square, props, player
     -- intentional ground-floor wall place from a catwalk).
     return square
 end
+
+LayeredPlacement.log("v" .. LayeredPlacement.VERSION .. " loaded ("
+    .. LayeredPlacement.environment()
+    .. ", world writes " .. (LayeredPlacement.canMutateWorld() and "local" or "server-side") .. ")")

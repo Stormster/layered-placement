@@ -1,8 +1,8 @@
 require "LayeredPlacement/LP_Shared"
-require "BuildingObjects/ISBuildingObject"
 
 --- Deferred: ISMoveableCursor lives under server/BuildingObjects and is often
---- nil when client scripts first load (was crashing on ISMoveableCursor.render).
+--- unavailable when client scripts first load. Wait for both cursor globals
+--- instead of requiring the server-side file during the early MP load phase.
 local hooked = false
 
 local function withinCatwalkReach(character, square)
@@ -77,7 +77,9 @@ local function hookCursor()
     if hooked then
         return
     end
-    if not ISMoveableCursor or not ISMoveableCursor.isValid then
+    if not ISMoveableCursor or not ISMoveableCursor.isValid
+        or not ISBuildingObject or not ISBuildingObject.tryBuild or not ISBuildingObject.walkTo
+    then
         return
     end
     hooked = true
