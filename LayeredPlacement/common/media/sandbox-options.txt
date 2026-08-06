@@ -35,7 +35,7 @@ option LayeredPlacement.CatwalkReach
 option LayeredPlacement.LightInteract
 {
     type = boolean,
-    default = true,
+    default = false,
     page = LayeredPlacement,
     translation = LayeredPlacement_LightInteract,
 }

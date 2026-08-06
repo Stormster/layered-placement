@@ -193,10 +193,10 @@ local function collectHighLightsNear(playerObj, worldobjects)
     return lights
 end
 
---- How far from the clicked tile we may still redirect to a light. Small on
---- purpose: a railing light sits on (or next to) the railing you clicked, while
---- an unrelated lamp four tiles away must never steal the click.
-local FOCUS_RANGE = 2
+--- How far from the clicked tile we may still redirect to a light. Zero: only a
+--- light on the very tile you clicked counts. Anything wider let a click on the
+--- floor toggle a lamp the player was nowhere near aiming at.
+local FOCUS_RANGE = 0
 
 local function squareDist(a, b)
     if not a or not b then
@@ -566,9 +566,9 @@ Events.LoadGridsquare.Add(onLoadSquare)
 local _toggleComplete = ISToggleLightAction.complete
 function ISToggleLightAction:complete()
     local result = _toggleComplete(self)
-    if LayeredPlacement.allowLightInteract()
-        and self.character and self.object and isHighLightSwitch(self.object)
-    then
+    -- Not gated on the easier controls: this only records the state of a light we
+    -- already manage, and vanilla picked the target itself.
+    if self.character and self.object and LayeredPlacement.managesLight(self.object) then
         local desired = self.object.isActivated and self.object:isActivated() or false
         LayeredPlacement.requestLightState(self.character, self.object, desired)
     end

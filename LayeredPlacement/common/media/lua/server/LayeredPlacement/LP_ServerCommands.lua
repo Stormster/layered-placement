@@ -265,10 +265,6 @@ local function onSetLightState(player, args)
     if not player or not instanceof(player, "IsoPlayer") then
         return
     end
-    if not LayeredPlacement.serverAllows("lightInteract") then
-        LayeredPlacement.log("server setLightState rejected: disabled by Sandbox settings")
-        return
-    end
     local square = squareFromArgs(args)
     if not square or not LayeredPlacement.withinBrushReach(player, square) then
         LayeredPlacement.log("server setLightState: bad square/out of reach")
@@ -281,6 +277,13 @@ local function onSetLightState(player, args)
     local light = lightFromArgs(square, args)
     if not light then
         LayeredPlacement.log("server setLightState: light not found")
+        return
+    end
+    -- Only lights this mod placed or marked for battery power. That keeps the
+    -- state persistence working while the easier controls are off, without
+    -- handing clients a switch for every light on the map.
+    if not LayeredPlacement.managesLight(light) then
+        LayeredPlacement.log("server setLightState: not a Layered Placement light")
         return
     end
     local desired = args.desired and true or false
