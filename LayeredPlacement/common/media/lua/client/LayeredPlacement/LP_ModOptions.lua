@@ -25,8 +25,10 @@ local OPTIONS = {
     },
     {
         id = "lightInteract",
-        label = "Easier railing light controls",
-        tooltip = "Make turn on/off and right-click menus work better for lamps on railings (so the rail doesn't eat every click). Independent of placement options.",
+        label = "Easier railing light controls (disabled - in development)",
+        tooltip = "Turned off in this version and ignored even if you tick it. Clicking near a lamp could toggle a light you were not aiming at, so lights use the normal controls for now. It needs more development and will be back in a later update. Placing lights on railings is unaffected.",
+        default = false,
+        serverNote = false,
     },
 }
 
@@ -41,6 +43,12 @@ local function applyFromUiValues()
     for _, def in ipairs(OPTIONS) do
         local opt = opts:getOption(def.id)
         if opt and opt.getValue then
+            -- A feature held back in code must not show a ticked box.
+            if def.default == false and opt.setValue then
+                pcall(function()
+                    opt:setValue(false)
+                end)
+            end
             LayeredPlacement.setOption(def.id, LayeredPlacement.coerceBool(opt:getValue(), true))
         end
     end
@@ -91,7 +99,11 @@ if PZAPI and PZAPI.ModOptions then
     if not options then
         options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
         for _, def in ipairs(OPTIONS) do
-            options:addTickBox(def.id, def.label, true, def.tooltip .. SERVER_NOTE)
+            local tooltip = def.tooltip
+            if def.serverNote ~= false then
+                tooltip = tooltip .. SERVER_NOTE
+            end
+            options:addTickBox(def.id, def.label, def.default ~= false, tooltip)
         end
     end
 

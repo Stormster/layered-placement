@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.25"
+LayeredPlacement.VERSION = "1.6.26"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -314,7 +314,7 @@ LayeredPlacement.options = LayeredPlacement.options or {
     floatingPlace = true,  -- railings / catwalks / wall lamps without a solid wall
     meshFloorAim = true,   -- Place/Pickup aim at your floor when the mouse falls through mesh
     catwalkReach = true,   -- place/pickup when you're next to a tile but pathing fails
-    lightInteract = true,  -- easier turn on/off and right-click for railing lamps
+    lightInteract = false, -- easier turn on/off and right-click for railing lamps (held back, see LIGHT_INTERACT_WIP)
 }
 
 --- Support-facing log: one line per real event (boot, place, pickup, server
@@ -528,8 +528,31 @@ function LayeredPlacement.allowCatwalkReach()
     return flag("catwalkReach")
 end
 
+--- Temporarily forced off: click targeting could toggle a light the player was
+--- not aiming at, so the easier controls are worse than vanilla for now. The
+--- hooks stay in the build and every one of them checks allowLightInteract, so
+--- clearing this flag brings the feature back once targeting is trustworthy.
+LayeredPlacement.LIGHT_INTERACT_WIP = true
+
 function LayeredPlacement.allowLightInteract()
+    if LayeredPlacement.LIGHT_INTERACT_WIP then
+        return false
+    end
     return flag("lightInteract")
+end
+
+--- Lights this mod placed or opted into battery power. Their on/off state is
+--- ours to persist even with the easier controls off, otherwise a vanilla toggle
+--- gets undone by the state we restore on chunk load.
+function LayeredPlacement.managesLight(obj)
+    if not obj or not obj.getModData or not instanceof(obj, "IsoLightSwitch") then
+        return false
+    end
+    local md = obj:getModData()
+    if not md then
+        return false
+    end
+    return (md.lpBatteryLight or md.lpGrid or md.lpWantOn ~= nil) and true or false
 end
 
 --- True when this square/light should run on battery (no building power path).
