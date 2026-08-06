@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.24"
+LayeredPlacement.VERSION = "1.6.25"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -73,6 +73,54 @@ function LayeredPlacement.gridPartsFromSprite(sprite)
         return nil
     end
     return parts, grid
+end
+
+--- Where the multi-tile object that owns this sprite starts.
+--- The sprite's own slot in its grid wins over a recorded origin: a light only
+--- ever sits at one offset within its footprint, while a recorded origin can be
+--- wrong (older versions stamped neighbouring lights with the wrong one, and
+--- that tag persists in the save).
+function LayeredPlacement.gridOriginOf(obj)
+    local square = obj and obj.getSquare and obj:getSquare()
+    if not square then
+        return nil
+    end
+    local spr = obj.getSprite and obj:getSprite()
+    local built, spriteGrid = LayeredPlacement.gridPartsFromSprite(spr)
+    if built and spriteGrid then
+        return square:getX() - spriteGrid:getSpriteGridPosX(spr),
+            square:getY() - spriteGrid:getSpriteGridPosY(spr),
+            square:getZ(),
+            built
+    end
+    local md = obj.getModData and obj:getModData()
+    local grid = md and md.lpGrid
+    if grid and grid.parts and grid.ox ~= nil and grid.oy ~= nil and grid.oz ~= nil then
+        return grid.ox, grid.oy, grid.oz, grid.parts
+    end
+    return nil
+end
+
+--- Does this object belong to the footprint that starts at the given origin?
+--- Guards every by-sprite-name lookup: two string lights hung in a row share all
+--- their sprite names, so name alone would let one light claim its neighbour.
+function LayeredPlacement.sameGridOrigin(obj, originX, originY, originZ)
+    local ox, oy, oz = LayeredPlacement.gridOriginOf(obj)
+    if ox == nil then
+        return false
+    end
+    return ox == originX and oy == originY and oz == originZ
+end
+
+--- True only when the object provably belongs to a *different* footprint. Used
+--- where the old behaviour must stand for objects we cannot place (lit sprite
+--- variants, untagged leftovers): those answer nil and are left alone.
+function LayeredPlacement.foreignGridPart(obj, originX, originY, originZ)
+    local ox, oy, oz = LayeredPlacement.gridOriginOf(obj)
+    if ox == nil then
+        return false
+    end
+    return ox ~= originX or oy ~= originY or oz ~= originZ
 end
 
 function LayeredPlacement.tagMultiGridObject(obj, originX, originY, originZ, parts)
@@ -178,26 +226,15 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
         return false
     end
 
-    local parts, originX, originY, originZ
     local md = obj.getModData and obj:getModData()
-    local grid = md and md.lpGrid
     local desiredLightState = md and md.lpWantOn
     if desiredLightState == nil and instanceof(obj, "IsoLightSwitch") and obj.isActivated then
         desiredLightState = obj:isActivated() and true or false
     end
-    if grid and grid.parts and grid.ox then
-        parts = grid.parts
-        originX, originY, originZ = grid.ox, grid.oy, grid.oz
-    else
-        -- Untagged leftovers from older versions: rebuild from the sprite grid.
-        local built, spriteGrid = LayeredPlacement.gridPartsFromSprite(spr)
-        if not built or not spriteGrid then
-            return false
-        end
-        parts = built
-        originX = square:getX() - spriteGrid:getSpriteGridPosX(spr)
-        originY = square:getY() - spriteGrid:getSpriteGridPosY(spr)
-        originZ = square:getZ()
+
+    local originX, originY, originZ, parts = LayeredPlacement.gridOriginOf(obj)
+    if not parts then
+        return false
     end
 
     local restored = 0
@@ -220,7 +257,7 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
                         )
                         restored = restored + 1
                     end
-                else
+                elseif LayeredPlacement.sameGridOrigin(existing, originX, originY, originZ) then
                     LayeredPlacement.tagMultiGridObject(
                         existing, originX, originY, originZ, parts
                     )
@@ -256,7 +293,11 @@ function LayeredPlacement.restoreMultiGridOnSquare(square)
             local md = obj.getModData and obj:getModData()
             local spr = obj.getSprite and obj:getSprite()
             local grid = spr and spr.getSpriteGrid and spr:getSpriteGrid()
-            if (md and md.lpGrid) or (grid and instanceof(obj, "IsoLightSwitch")) then
+            -- Only objects this mod placed. Treating every vanilla multi-tile
+            -- light as a candidate let the restore pass spawn and re-tag map
+            -- lights it does not own.
+            local owned = md and (md.lpGrid or md.lpBatteryLight or md.lpWantOn ~= nil)
+            if owned and grid then
                 table.insert(candidates, obj)
             end
         end
@@ -643,42 +684,25 @@ function LayeredPlacement.collectLightGroup(obj)
     if not obj or not instanceof(obj, "IsoLightSwitch") then
         return group
     end
-    local square = obj:getSquare()
-    local spr = obj:getSprite()
-    if not square or not spr then
-        table.insert(group, obj)
-        return group
-    end
 
-    local md = obj.getModData and obj:getModData()
-    local grid = md and md.lpGrid
-    local originX, originY, originZ, parts
-    if grid and grid.parts and grid.ox ~= nil then
-        originX, originY, originZ, parts = grid.ox, grid.oy, grid.oz, grid.parts
-    else
-        local built, spriteGrid = LayeredPlacement.gridPartsFromSprite(spr)
-        if built and spriteGrid then
-            parts = built
-            originX = square:getX() - spriteGrid:getSpriteGridPosX(spr)
-            originY = square:getY() - spriteGrid:getSpriteGridPosY(spr)
-            originZ = square:getZ()
-        end
-    end
-
+    local originX, originY, originZ, parts = LayeredPlacement.gridOriginOf(obj)
     if not parts then
         table.insert(group, obj)
         return group
     end
 
+    local cell = getCell()
     local seen = {}
     for i = 1, #parts do
         local part = parts[i]
         if part and part.n and part.x ~= nil and part.y ~= nil then
-            local sq = LayeredPlacement.ensureGridSquare(
-                originX + part.x, originY + part.y, originZ, true
-            )
+            -- Look up only. Creating squares to read a light's state would spawn
+            -- air tiles across the footprint.
+            local sq = cell and cell:getGridSquare(originX + part.x, originY + part.y, originZ)
             local found = LayeredPlacement.findSpriteObject(sq, part.n)
-            if found and instanceof(found, "IsoLightSwitch") and not seen[found] then
+            if found and instanceof(found, "IsoLightSwitch") and not seen[found]
+                and LayeredPlacement.sameGridOrigin(found, originX, originY, originZ)
+            then
                 seen[found] = true
                 table.insert(group, found)
             end

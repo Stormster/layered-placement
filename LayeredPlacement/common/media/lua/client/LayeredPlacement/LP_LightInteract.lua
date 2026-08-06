@@ -94,6 +94,48 @@ local function copyWorldObjects(worldobjects)
     return list
 end
 
+local function mouseSquares(playerObj)
+    local cell = getCell()
+    if not cell or not playerObj then
+        return {}
+    end
+    local mx = (getMouseXScaled and getMouseXScaled()) or getMouseX()
+    local my = (getMouseYScaled and getMouseYScaled()) or getMouseY()
+    local z = playerObj:getZ()
+    local playerNum = playerObj:getPlayerNum()
+    local list = {}
+    if screenToIsoX and screenToIsoY then
+        local sq = cell:getGridSquare(
+            screenToIsoX(playerNum, mx, my, z), screenToIsoY(playerNum, mx, my, z), z
+        )
+        if sq then
+            table.insert(list, sq)
+        end
+    end
+    if ISCoordConversion and ISCoordConversion.ToWorld then
+        local zoom = getCore():getZoom(playerNum)
+        local wx, wy = ISCoordConversion.ToWorld(mx * zoom, my * zoom, z)
+        local sq = cell:getGridSquare(wx, wy, z)
+        if sq and sq ~= list[1] then
+            table.insert(list, sq)
+        end
+    end
+    return list
+end
+
+local function objectSquares(worldobjects)
+    local list = {}
+    forEachWorldObject(worldobjects, function(obj)
+        if obj.getSquare then
+            local sq = obj:getSquare()
+            if sq then
+                table.insert(list, sq)
+            end
+        end
+    end)
+    return list
+end
+
 local function collectHighLightsNear(playerObj, worldobjects)
     if not playerObj then
         return {}
@@ -112,23 +154,14 @@ local function collectHighLightsNear(playerObj, worldobjects)
 
     mark(playerObj:getSquare() or playerObj:getCurrentSquare())
 
-    forEachWorldObject(worldobjects, function(obj)
-        if obj.getSquare then
-            mark(obj:getSquare())
-        end
-    end)
-
-    local mx = (getMouseXScaled and getMouseXScaled()) or getMouseX()
-    local my = (getMouseYScaled and getMouseYScaled()) or getMouseY()
-    local z = playerObj:getZ()
-    local playerNum = playerObj:getPlayerNum()
-    if screenToIsoX and screenToIsoY then
-        mark(cell:getGridSquare(screenToIsoX(playerNum, mx, my, z), screenToIsoY(playerNum, mx, my, z), z))
+    local clicked = objectSquares(worldobjects)
+    for i = 1, #clicked do
+        mark(clicked[i])
     end
-    if ISCoordConversion and ISCoordConversion.ToWorld then
-        local zoom = getCore():getZoom(playerNum)
-        local wx, wy = ISCoordConversion.ToWorld(mx * zoom, my * zoom, z)
-        mark(cell:getGridSquare(wx, wy, z))
+
+    local hovered = mouseSquares(playerObj)
+    for i = 1, #hovered do
+        mark(hovered[i])
     end
 
     local scan = {}
@@ -160,15 +193,91 @@ local function collectHighLightsNear(playerObj, worldobjects)
     return lights
 end
 
+--- How far from the clicked tile we may still redirect to a light. Small on
+--- purpose: a railing light sits on (or next to) the railing you clicked, while
+--- an unrelated lamp four tiles away must never steal the click.
+local FOCUS_RANGE = 2
+
+local function squareDist(a, b)
+    if not a or not b then
+        return 999
+    end
+    local dx = math.abs(a:getX() - b:getX())
+    local dy = math.abs(a:getY() - b:getY())
+    return math.max(dx, dy) + math.abs(a:getZ() - b:getZ())
+end
+
+local function focusDist(light, squares)
+    local lsq = light and light:getSquare()
+    if not lsq then
+        return 999
+    end
+    local best = 999
+    for i = 1, #squares do
+        local d = squareDist(lsq, squares[i])
+        if d < best then
+            best = d
+        end
+    end
+    return best
+end
+
+--- What the player pointed at. The engine already resolved sprite offsets when
+--- it built the clicked-object list, so those squares beat the raw mouse tile:
+--- a hanging lamp draws two tiles up from the square it actually occupies.
+local function focusSquares(playerObj, worldobjects)
+    local squares = objectSquares(worldobjects)
+    if #squares > 0 then
+        return squares
+    end
+    squares = mouseSquares(playerObj)
+    if #squares > 0 then
+        return squares
+    end
+    return { playerObj and (playerObj:getSquare() or playerObj:getCurrentSquare()) }
+end
+
+--- Lights the click actually landed on. A switch that is not IsHigh still counts
+--- as a hit: vanilla targets those correctly, so we must leave the menu alone
+--- instead of redirecting it to some other light nearby.
+local function clickedLights(worldobjects)
+    local high, anyLight = {}, false
+    forEachWorldObject(worldobjects, function(obj)
+        if instanceof(obj, "IsoLightSwitch") then
+            anyLight = true
+            if isHighLightSwitch(obj) then
+                table.insert(high, obj)
+            end
+        end
+    end)
+    return high, anyLight
+end
+
+--- Pick the light the player aimed at, not the one nearest the player: ranking
+--- by player distance turns a click on the lamp overhead into a toggle of
+--- whichever light happens to be closest to where you stand.
 local function pickBestLight(playerObj, worldobjects)
-    local lights = collectHighLightsNear(playerObj, worldobjects)
-    local best, bestDist = nil, 999
-    for i = 1, #lights do
-        local light = lights[i]
-        local d = chebyshev(playerObj, light:getSquare())
-        if d < bestDist then
-            bestDist = d
-            best = light
+    if not playerObj then
+        return nil
+    end
+    local candidates, anyLight = clickedLights(worldobjects)
+    if #candidates == 0 then
+        if anyLight then
+            return nil
+        end
+        candidates = collectHighLightsNear(playerObj, worldobjects)
+    end
+
+    local focus = focusSquares(playerObj, worldobjects)
+    local best, bestFocus, bestPlayer = nil, 999, 999
+    for i = 1, #candidates do
+        local light = candidates[i]
+        local fd = focusDist(light, focus)
+        if fd <= FOCUS_RANGE then
+            local pd = chebyshev(playerObj, light:getSquare())
+            if fd < bestFocus or (fd == bestFocus and pd < bestPlayer) then
+                best, bestFocus, bestPlayer = light, fd, pd
+            end
         end
     end
     return best
@@ -288,9 +397,10 @@ function ISWorldObjectContextMenu.createMenu(player, worldobjects, x, y, test)
     end
     local list = copyWorldObjects(worldobjects)
     local playerObj = getSpecificPlayer(player)
-    local lights = collectHighLightsNear(playerObj, list)
-    for i = 1, #lights do
-        local light = lights[i]
+    -- Only the aimed-at light gets added. Injecting every light in reach is what
+    -- made a menu opened on one lamp show rows for lights across the room.
+    local light = pickBestLight(playerObj, list)
+    if light then
         local found = false
         for j = 1, #list do
             if list[j] == light then
@@ -397,29 +507,24 @@ local function hookClickHandler()
             if LayeredPlacement.allowLightInteract() and object then
                 -- Prefer toggling a nearby high light over interacting with the
                 -- railing/fence/mesh the click actually hit.
+                -- pickBestLight already bounds this to the clicked tile's
+                -- neighbourhood, so only the "is it worth stealing" test is left.
                 local light = pickBestLight(playerObj, { object })
                 if light and light ~= object and inLightReach(playerObj, light:getSquare()) then
-                    local osq = object:getSquare()
-                    local lsq = light:getSquare()
-                    if osq and lsq and osq:getZ() == lsq:getZ()
-                        and math.abs(osq:getX() - lsq:getX()) <= 2
-                        and math.abs(osq:getY() - lsq:getY()) <= 2
+                    local steal = instanceof(object, "IsoLightSwitch")
+                        or (object.getContainer and object:getContainer() == nil
+                            and not instanceof(object, "IsoDoor")
+                            and not instanceof(object, "IsoWindow")
+                            and not instanceof(object, "IsoThumpable"))
+                    local name = object:getSprite() and object:getSprite():getName() or ""
+                    local hoppable = object.isHoppable and object:isHoppable()
+                    if steal or hoppable
+                        or string.find(name, "rail", 1, true)
+                        or string.find(name, "fence", 1, true)
+                        or string.find(name, "mesh", 1, true)
+                        or string.find(name, "catwalk", 1, true)
                     then
-                        local steal = instanceof(object, "IsoLightSwitch")
-                            or (object.getContainer and object:getContainer() == nil
-                                and not instanceof(object, "IsoDoor")
-                                and not instanceof(object, "IsoWindow")
-                                and not instanceof(object, "IsoThumpable"))
-                        local name = object:getSprite() and object:getSprite():getName() or ""
-                        local hoppable = object.isHoppable and object:isHoppable()
-                        if steal or hoppable
-                            or string.find(name, "rail", 1, true)
-                            or string.find(name, "fence", 1, true)
-                            or string.find(name, "mesh", 1, true)
-                            or string.find(name, "catwalk", 1, true)
-                        then
-                            return ISObjectClickHandler.doClickLightSwitch(light, playerNum, playerObj)
-                        end
+                        return ISObjectClickHandler.doClickLightSwitch(light, playerNum, playerObj)
                     end
                 end
             end
