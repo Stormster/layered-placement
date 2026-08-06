@@ -1,9 +1,9 @@
 Decorate with Pickup/Place Furniture without using Brush Tool but the way the admin brush allows.
 
-Hang lights over tables and posters, put lamps on railings and catwalks, and turn them on/off without the railing eating your clicks.
+Hang lights over tables and posters, put lamps on railings and catwalks, and turn them on/off without the railing eating your clicks. Outdoor and railing lights use battery when there is no building power.
 
 Separate Mod Options toggles for each feature. Crates/tables still stack normally. Skills and tools still matter.
 
-B42.20+. Safe mid-save. Multiplayer should work now, enable on server and all clients, and please report any issues.
+B42.20+. Safe mid-save. Multiplayer supported — enable on server and all clients, and please report any issues.
 
 Do not reupload. Subscribe on Workshop for updates.
