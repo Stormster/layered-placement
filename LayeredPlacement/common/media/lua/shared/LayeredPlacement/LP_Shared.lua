@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.21"
+LayeredPlacement.VERSION = "1.6.22"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
@@ -415,7 +415,11 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
     local ok, err = pcall(function()
         local needBattery = LayeredPlacement.lightShouldUseBattery(obj)
         if needBattery then
-            if obj.setUseBattery then
+            -- setUseBattery() calls setActive(false) internally. Use the direct
+            -- setter so preparing/refreshing battery state doesn't undo Turn On.
+            if obj.setUseBatteryDirect then
+                obj:setUseBatteryDirect(true)
+            elseif obj.setUseBattery then
                 obj:setUseBattery(true)
             end
             if obj.setHasBatteryRaw then
@@ -466,8 +470,8 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
             end
         end
         if needBattery then
-            if obj.setUseBattery then
-                obj:setUseBattery(true)
+            if obj.setUseBatteryDirect then
+                obj:setUseBatteryDirect(true)
             end
             if obj.setHasBatteryRaw then
                 obj:setHasBatteryRaw(true)
