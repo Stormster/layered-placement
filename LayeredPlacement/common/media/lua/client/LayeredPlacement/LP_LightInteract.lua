@@ -75,10 +75,24 @@ end
 --- canSwitchLight true and preserves on-state across chunk load / relog.
 -- preparePlacedLight lives in LP_Shared (server + client place paths).
 
+local function ensureLightBulb(obj)
+    if not obj or not obj.hasLightBulb or obj:hasLightBulb() then
+        return
+    end
+    if obj.setBulbItemRaw then
+        pcall(function()
+            obj:setBulbItemRaw("Base.LightBulb")
+        end)
+    end
+end
+
 local function refreshBatteryLight(obj)
     if not obj or not instanceof(obj, "IsoLightSwitch") then
         return
     end
+    -- Place-from-item can leave bulbItem nil; restore before the menu asks
+    -- canSwitchLight, otherwise Turn On appears (from us) but never sticks.
+    ensureLightBulb(obj)
     local md = obj.getModData and obj:getModData()
     if not (md and md.lpBatteryLight) then
         return
@@ -216,10 +230,10 @@ local function collectHighLightsNear(playerObj, worldobjects)
     return lights
 end
 
---- How far from the clicked tile we may still redirect to a light. Zero: only a
---- light on the very tile you clicked counts. Anything wider let a click on the
---- floor toggle a lamp the player was nowhere near aiming at.
-local FOCUS_RANGE = 0
+--- How far from the clicked tile we may still redirect to a light. One tile
+--- covers multi-tile string lights and railings that share an edge with the
+--- lamp; wider than that steals clicks meant for a different fixture.
+local FOCUS_RANGE = 1
 
 local function squareDist(a, b)
     if not a or not b then
@@ -583,30 +597,54 @@ local function hookClickHandler()
         return _doClickLightSwitch(object, playerNum, playerObj)
     end
 
+    --- Railing / walkway tiles often pick before the IsoLightSwitch hung on them.
+    --- industry_01_* catwalk rails have none of "rail"/"fence" in the sprite name.
+    local function clickShouldYieldToLight(object)
+        if not object or instanceof(object, "IsoLightSwitch") then
+            return true
+        end
+        if instanceof(object, "IsoDoor") or instanceof(object, "IsoWindow")
+            or instanceof(object, "IsoThumpable")
+        then
+            return false
+        end
+        if object.getContainer and object:getContainer() ~= nil then
+            return false
+        end
+        if object.isHoppable and object:isHoppable() then
+            return true
+        end
+        local name = object:getSprite() and object:getSprite():getName() or ""
+        if name ~= "" and (
+            string.find(name, "rail", 1, true)
+            or string.find(name, "fence", 1, true)
+            or string.find(name, "mesh", 1, true)
+            or string.find(name, "catwalk", 1, true)
+            or string.find(name, "industry_", 1, true)
+        ) then
+            return true
+        end
+        local props = object.getProperties and object:getProperties()
+        if props and props.has and IsoFlagType then
+            if (IsoFlagType.HoppableN and props:has(IsoFlagType.HoppableN))
+                or (IsoFlagType.HoppableW and props:has(IsoFlagType.HoppableW))
+            then
+                return true
+            end
+        end
+        return false
+    end
+
     if _doClickSpecificObject then
         function ISObjectClickHandler.doClickSpecificObject(object, playerNum, playerObj)
             if LayeredPlacement.allowLightInteract() and object then
                 -- Prefer toggling a nearby high light over interacting with the
                 -- railing/fence/mesh the click actually hit.
-                -- pickBestLight already bounds this to the clicked tile's
-                -- neighbourhood, so only the "is it worth stealing" test is left.
                 local light = pickBestLight(playerObj, { object })
-                if light and light ~= object and inLightReach(playerObj, light:getSquare()) then
-                    local steal = instanceof(object, "IsoLightSwitch")
-                        or (object.getContainer and object:getContainer() == nil
-                            and not instanceof(object, "IsoDoor")
-                            and not instanceof(object, "IsoWindow")
-                            and not instanceof(object, "IsoThumpable"))
-                    local name = object:getSprite() and object:getSprite():getName() or ""
-                    local hoppable = object.isHoppable and object:isHoppable()
-                    if steal or hoppable
-                        or string.find(name, "rail", 1, true)
-                        or string.find(name, "fence", 1, true)
-                        or string.find(name, "mesh", 1, true)
-                        or string.find(name, "catwalk", 1, true)
-                    then
-                        return ISObjectClickHandler.doClickLightSwitch(light, playerNum, playerObj)
-                    end
+                if light and light ~= object and inLightReach(playerObj, light:getSquare())
+                    and clickShouldYieldToLight(object)
+                then
+                    return ISObjectClickHandler.doClickLightSwitch(light, playerNum, playerObj)
                 end
             end
             return _doClickSpecificObject(object, playerNum, playerObj)

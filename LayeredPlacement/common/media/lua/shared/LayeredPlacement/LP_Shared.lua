@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.28"
+LayeredPlacement.VERSION = "1.6.29"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -614,31 +614,31 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         return false
     end
     local ok, err = pcall(function()
+        -- Moveable place copies item light settings onto the switch. A fresh
+        -- Moveable often has a nil bulb, which overwrites the constructor
+        -- default. setActive then forces the requested state to false, and
+        -- update() immediately kills any activated light with no bulb.
+        if obj.hasLightBulb and not obj:hasLightBulb() and obj.setBulbItemRaw then
+            obj:setBulbItemRaw("Base.LightBulb")
+        end
+
         local needBattery = LayeredPlacement.lightShouldUseBattery(obj)
+        -- Always use the direct battery setter. setUseBattery() calls
+        -- setActive(false) first, which undoes Turn On during refresh/toggle.
+        if obj.setUseBatteryDirect then
+            obj:setUseBatteryDirect(needBattery and true or false)
+        elseif obj.setUseBattery then
+            obj:setUseBattery(needBattery and true or false)
+        end
         if needBattery then
-            -- setUseBattery() calls setActive(false) internally. Use the direct
-            -- setter so preparing/refreshing battery state doesn't undo Turn On.
-            if obj.setUseBatteryDirect then
-                obj:setUseBatteryDirect(true)
-            elseif obj.setUseBattery then
-                obj:setUseBattery(true)
-            end
             if obj.setHasBatteryRaw then
                 obj:setHasBatteryRaw(true)
             end
             if obj.setPower then
                 obj:setPower(1.0)
             end
-        else
-            if obj.setUseBattery then
-                obj:setUseBattery(false)
-            end
-            if obj.setUseBatteryDirect then
-                pcall(function()
-                    obj:setUseBatteryDirect(false)
-                end)
-            end
         end
+
         local md = obj:getModData()
         if md then
             md.lpBatteryLight = needBattery and true or false
@@ -657,16 +657,27 @@ function LayeredPlacement.preparePlacedLight(obj, desired)
         if wantOn ~= nil and obj.isActivated
             and obj:isActivated() ~= (wantOn and true or false)
         then
+            local on = wantOn and true or false
             local applied = false
+            -- ignoreSwitchCheck bypasses canSwitchLight (no room power / battery).
             if obj.setActive then
                 pcall(function()
-                    obj:setActive(wantOn and true or false, false, true)
+                    obj:setActive(on, false, true)
                 end)
-                applied = obj:isActivated() == (wantOn and true or false)
+                applied = obj:isActivated() == on
             end
-            if not applied and obj.switchLight then
-                obj:switchLight(wantOn and true or false)
-            elseif not applied and obj.toggle then
+            -- Outdoor / canBeModified=false lights refuse setActive when the
+            -- square has no room. Drive the flag and light sources directly.
+            if not applied then
+                if obj.setActivated then
+                    obj:setActivated(on)
+                end
+                if obj.switchLight then
+                    obj:switchLight(on)
+                end
+                applied = obj:isActivated() == on
+            end
+            if not applied and obj.toggle then
                 obj:toggle()
             end
         end
