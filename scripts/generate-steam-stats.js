@@ -8,7 +8,8 @@
 const fs = require("fs");
 const path = require("path");
 
-const WORKSHOP_ID = "3775423228";
+const WORKSHOP_ID = process.env.WORKSHOP_ID || "3775423228";
+const MOD_TITLE = process.env.MOD_TITLE || "Layered Placement";
 const OUT_PATH = path.join(__dirname, "..", "assets", "steam-stats.svg");
 
 async function fetchWorkshopStats(id) {
@@ -40,16 +41,27 @@ function fmt(n) {
 }
 
 const ICONS = {
-  eye:
-    '<path d="M12 5c-5 0-8.5 4-9.7 6.6a1 1 0 0 0 0 .8C3.5 15 7 19 12 19s8.5-4 9.7-6.6a1 1 0 0 0 0-.8C20.5 9 17 5 12 5Zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Z"/><circle cx="12" cy="12" r="2.2"/>',
-  download:
-    '<path d="M12 3v10.2m0 0-3.8-3.8M12 13.2l3.8-3.8"/><path d="M5 16.5v2A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5v-2"/>',
-  heart:
-    '<path d="M12 20.2s-7.5-4.4-9.8-9C.8 8 2 4.5 5.2 3.6c2-.6 3.9.2 5 1.8.9-1.6 3-2.4 5-1.8 3.2.9 4.4 4.4 3 7.6-2.3 4.6-9.8 9-9.8 9Z"/>',
+  eye: {
+    stroke:
+      '<path d="M12 5c-5 0-8.5 4-9.7 6.6a1 1 0 0 0 0 .8C3.5 15 7 19 12 19s8.5-4 9.7-6.6a1 1 0 0 0 0-.8C20.5 9 17 5 12 5Zm0 11.5a4.5 4.5 0 1 1 0-9 4.5 4.5 0 0 1 0 9Z"/><circle cx="12" cy="12" r="2.2"/>',
+  },
+  download: {
+    stroke:
+      '<path d="M12 3v10.2m0 0-3.8-3.8M12 13.2l3.8-3.8"/><path d="M5 16.5v2A2.5 2.5 0 0 0 7.5 21h9a2.5 2.5 0 0 0 2.5-2.5v-2"/>',
+  },
+  // Filled heart with a proper point — stroking the old closed path made a
+  // flat "balloon knot" at the tip under round line joins.
+  heart: {
+    fill: '<path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/>',
+  },
 };
 
 function iconSvg(name, x, y, size, color) {
-  return `<g transform="translate(${x - size / 2},${y - size / 2}) scale(${size / 24})" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${ICONS[name]}</g>`;
+  const icon = ICONS[name];
+  if (icon.fill) {
+    return `<g transform="translate(${x - size / 2},${y - size / 2}) scale(${size / 24})" fill="${color}" stroke="none">${icon.fill}</g>`;
+  }
+  return `<g transform="translate(${x - size / 2},${y - size / 2}) scale(${size / 24})" fill="none" stroke="${color}" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">${icon.stroke}</g>`;
 }
 
 function renderCard({ visitors, subscribers, favorites }, updatedAt) {
@@ -92,7 +104,7 @@ function renderCard({ visitors, subscribers, favorites }, updatedAt) {
     .join("\n");
 
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="Steam Workshop stats">
-  <title>Layered Placement — Steam Workshop stats</title>
+  <title>${MOD_TITLE} — Steam Workshop stats</title>
   <style>
     .card { fill: ${bgLight}; stroke: ${cardBorderLight}; }
     .heading { fill: ${headingLight}; }
