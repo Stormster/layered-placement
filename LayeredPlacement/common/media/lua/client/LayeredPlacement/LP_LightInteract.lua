@@ -173,68 +173,6 @@ local function objectSquares(worldobjects)
     return list
 end
 
-local function collectHighLightsNear(playerObj, worldobjects)
-    if not playerObj then
-        return {}
-    end
-    local cell = getCell()
-    if not cell then
-        return {}
-    end
-
-    local squareSet = {}
-    local function mark(square)
-        if square then
-            squareSet[square] = true
-        end
-    end
-
-    mark(playerObj:getSquare() or playerObj:getCurrentSquare())
-
-    local clicked = objectSquares(worldobjects)
-    for i = 1, #clicked do
-        mark(clicked[i])
-    end
-
-    local hovered = mouseSquares(playerObj)
-    for i = 1, #hovered do
-        mark(hovered[i])
-    end
-
-    local scan = {}
-    for square, _ in pairs(squareSet) do
-        local x, y, zz = square:getX(), square:getY(), square:getZ()
-        for dx = -LayeredPlacement.CHEAT_REACH, LayeredPlacement.CHEAT_REACH do
-            for dy = -LayeredPlacement.CHEAT_REACH, LayeredPlacement.CHEAT_REACH do
-                local sq = cell:getGridSquare(x + dx, y + dy, zz)
-                if sq then
-                    scan[sq] = true
-                end
-            end
-        end
-    end
-
-    local lights, seen = {}, {}
-    for square, _ in pairs(scan) do
-        local objects = square:getObjects()
-        if objects then
-            for i = 0, objects:size() - 1 do
-                local obj = objects:get(i)
-                if isHighLightSwitch(obj) and not seen[obj] and inLightReach(playerObj, square) then
-                    seen[obj] = true
-                    table.insert(lights, obj)
-                end
-            end
-        end
-    end
-    return lights
-end
-
---- How far from the clicked tile we may still redirect to a light. One tile
---- covers multi-tile string lights and railings that share an edge with the
---- lamp; wider than that steals clicks meant for a different fixture.
-local FOCUS_RANGE = 1
-
 local function squareDist(a, b)
     if not a or not b then
         return 999
@@ -259,19 +197,71 @@ local function focusDist(light, squares)
     return best
 end
 
---- What the player pointed at. The engine already resolved sprite offsets when
---- it built the clicked-object list, so those squares beat the raw mouse tile:
---- a hanging lamp draws two tiles up from the square it actually occupies.
-local function focusSquares(playerObj, worldobjects)
+--- Where the cursor is aiming in world space. Mouse iso wins over the engine's
+--- clicked-object list: high sprites draw far from their square, so a string
+--- light five tiles away can land in worldobjects while you were pointing at
+--- the railing under your feet. Ranking against that object's own square then
+--- locks the wrong fixture in.
+local function aimSquares(playerObj, worldobjects)
+    local mouse = mouseSquares(playerObj)
+    if #mouse > 0 then
+        return mouse
+    end
     local squares = objectSquares(worldobjects)
     if #squares > 0 then
         return squares
     end
-    squares = mouseSquares(playerObj)
-    if #squares > 0 then
-        return squares
-    end
     return { playerObj and (playerObj:getSquare() or playerObj:getCurrentSquare()) }
+end
+
+--- How far from the aim tile a light may still count. One covers a railing
+--- click next to a lamp; two forgives hanging sprite offsets. Wider than that
+--- steals fixtures across the room.
+local FOCUS_RANGE = 1
+--- Engine click picks beyond this are treated as isometric ghosts and ignored.
+local CLICK_MAX = 2
+--- Neighborhood scanned around the aim tile for hanging lights on railings.
+local SCAN_RANGE = 2
+
+local function collectHighLightsNear(playerObj, aim)
+    if not playerObj then
+        return {}
+    end
+    local cell = getCell()
+    if not cell or not aim or #aim == 0 then
+        return {}
+    end
+
+    local scan = {}
+    for i = 1, #aim do
+        local square = aim[i]
+        if square then
+            local x, y, zz = square:getX(), square:getY(), square:getZ()
+            for dx = -SCAN_RANGE, SCAN_RANGE do
+                for dy = -SCAN_RANGE, SCAN_RANGE do
+                    local sq = cell:getGridSquare(x + dx, y + dy, zz)
+                    if sq then
+                        scan[sq] = true
+                    end
+                end
+            end
+        end
+    end
+
+    local lights, seen = {}, {}
+    for square, _ in pairs(scan) do
+        local objects = square:getObjects()
+        if objects then
+            for i = 0, objects:size() - 1 do
+                local obj = objects:get(i)
+                if isHighLightSwitch(obj) and not seen[obj] and inLightReach(playerObj, square) then
+                    seen[obj] = true
+                    table.insert(lights, obj)
+                end
+            end
+        end
+    end
+    return lights
 end
 
 --- Lights the click actually landed on. The engine resolved sprite offsets when
@@ -294,46 +284,38 @@ local function clickedLights(worldobjects)
     return plain
 end
 
-local function nearestInReach(playerObj, lights)
-    local best, bestDist = nil, 999
+local function bestByAim(playerObj, lights, aim, maxFocus)
+    local best, bestFocus, bestPlayer = nil, 999, 999
     for i = 1, #lights do
-        local square = lights[i]:getSquare()
-        local dist = chebyshev(playerObj, square)
-        if dist < bestDist and inLightReach(playerObj, square) then
-            best, bestDist = lights[i], dist
+        local light = lights[i]
+        local square = light:getSquare()
+        if square and inLightReach(playerObj, square) then
+            local fd = focusDist(light, aim)
+            if fd <= maxFocus then
+                local pd = chebyshev(playerObj, square)
+                if fd < bestFocus or (fd == bestFocus and pd < bestPlayer) then
+                    best, bestFocus, bestPlayer = light, fd, pd
+                end
+            end
         end
     end
     return best
 end
 
---- Pick the light the player aimed at, not the one nearest the player: ranking
---- by player distance turns a click on the lamp overhead into a toggle of
---- whichever light happens to be closest to where you stand.
+--- Pick the light under the cursor, not a distant high sprite the iso picker
+--- also returned, and not whichever lamp happens to stand nearest the player.
 local function pickBestLight(playerObj, worldobjects)
     if not playerObj then
         return nil
     end
-    -- Clicked lights skip the focus test entirely. Scoring them by tile is what
-    -- made a hanging light miss whenever it drew from its other grid half.
-    local clicked = nearestInReach(playerObj, clickedLights(worldobjects))
+    local aim = aimSquares(playerObj, worldobjects)
+    -- Clicked list first, but only if the object's square is actually near the
+    -- cursor. Without that gate, a far hanging sprite wins every time.
+    local clicked = bestByAim(playerObj, clickedLights(worldobjects), aim, CLICK_MAX)
     if clicked then
         return clicked
     end
-    local candidates = collectHighLightsNear(playerObj, worldobjects)
-
-    local focus = focusSquares(playerObj, worldobjects)
-    local best, bestFocus, bestPlayer = nil, 999, 999
-    for i = 1, #candidates do
-        local light = candidates[i]
-        local fd = focusDist(light, focus)
-        if fd <= FOCUS_RANGE then
-            local pd = chebyshev(playerObj, light:getSquare())
-            if fd < bestFocus or (fd == bestFocus and pd < bestPlayer) then
-                best, bestFocus, bestPlayer = light, fd, pd
-            end
-        end
-    end
-    return best
+    return bestByAim(playerObj, collectHighLightsNear(playerObj, aim), aim, FOCUS_RANGE)
 end
 
 --- addGetUpOption stores the real callback in param1 and its first argument in
@@ -444,19 +426,14 @@ local function onFill(player, context, worldobjects, test)
         return
     end
     local playerObj = getSpecificPlayer(player)
-    -- fetchVars is cleared and rebuilt from the clicked objects before any
-    -- option is created, so the light vanilla resolved is the one this menu is
-    -- about. Guessing again here is what let a neighbouring lamp take over.
-    local fetch = ISWorldObjectContextMenu.fetchVars
-    local light = fetch and fetch.lightSwitch
-    if light and not inLightReach(playerObj, light:getSquare()) then
-        light = nil
-    end
-    light = light or pickBestLight(playerObj, worldobjects)
+    -- Always re-resolve from the cursor. Vanilla fetch.lightSwitch can be a
+    -- distant high sprite the iso picker also returned for this click.
+    local light = pickBestLight(playerObj, worldobjects)
     if not light then
         return
     end
     refreshBatteryLight(light)
+    local fetch = ISWorldObjectContextMenu.fetchVars
     if fetch then
         fetch.lightSwitch = light
     end
@@ -486,24 +463,36 @@ function ISWorldObjectContextMenu.createMenu(player, worldobjects, x, y, test)
     if not LayeredPlacement.allowLightInteract() then
         return _createMenu(player, worldobjects, x, y, test)
     end
-    local list = copyWorldObjects(worldobjects)
     local playerObj = getSpecificPlayer(player)
-    -- Only the aimed-at light gets added. Injecting every light in reach is what
-    -- made a menu opened on one lamp show rows for lights across the room.
-    local light = pickBestLight(playerObj, list)
+    local list = copyWorldObjects(worldobjects)
+    local aim = aimSquares(playerObj, list)
+    -- Strip high lights whose square is nowhere near the cursor so vanilla
+    -- cannot build a Small Lights row for an isometric ghost five tiles away.
+    local filtered = {}
+    for j = 1, #list do
+        local obj = list[j]
+        if instanceof(obj, "IsoLightSwitch") and isHighLightSwitch(obj)
+            and focusDist(obj, aim) > CLICK_MAX
+        then
+            -- drop
+        else
+            table.insert(filtered, obj)
+        end
+    end
+    local light = pickBestLight(playerObj, filtered)
     if light then
         local found = false
-        for j = 1, #list do
-            if list[j] == light then
+        for j = 1, #filtered do
+            if filtered[j] == light then
                 found = true
                 break
             end
         end
         if not found then
-            table.insert(list, light)
+            table.insert(filtered, light)
         end
     end
-    return _createMenu(player, list, x, y, test)
+    return _createMenu(player, filtered, x, y, test)
 end
 
 local _onToggleLight = ISWorldObjectContextMenu.onToggleLight
