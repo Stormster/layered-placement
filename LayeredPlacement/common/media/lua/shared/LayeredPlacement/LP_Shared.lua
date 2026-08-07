@@ -3,6 +3,22 @@ LayeredPlacement = LayeredPlacement or {}
 LayeredPlacement.MOD_ID = "LayeredPlacement"
 LayeredPlacement.VERSION = "1.6.28"
 
+--- Version to show a player. mod.info is what the Mods screen and the Workshop
+--- report, so prefer it and let VERSION answer where that lookup does not exist
+--- (the server process) or where the mod runs from an unpacked folder.
+function LayeredPlacement.versionText()
+    if getModInfoByID then
+        local ok, version = pcall(function()
+            local info = getModInfoByID(LayeredPlacement.MOD_ID)
+            return info and info:getModVersion()
+        end)
+        if ok and version and version ~= "" then
+            return version
+        end
+    end
+    return LayeredPlacement.VERSION
+end
+
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
 --- works. Vanilla wall pickups hit the same flag; floating pickup puts those

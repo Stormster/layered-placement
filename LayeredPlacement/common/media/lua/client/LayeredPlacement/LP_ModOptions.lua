@@ -90,6 +90,9 @@ if PZAPI and PZAPI.ModOptions then
     local options = PZAPI.ModOptions:getOptions(LayeredPlacement.MOD_ID)
     if not options then
         options = PZAPI.ModOptions:create(LayeredPlacement.MOD_ID, "Layered Placement")
+        -- Players report problems by version, and the Mods screen is several
+        -- clicks away from the settings they were just changing.
+        options:addDescription("Version " .. LayeredPlacement.versionText())
         for _, def in ipairs(OPTIONS) do
             local tooltip = def.tooltip
             if def.serverNote ~= false then

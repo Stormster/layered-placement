@@ -4,6 +4,8 @@
 
 Available on the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3775423228).
 
+[![Steam Workshop stats](assets/steam-stats.svg)](https://steamcommunity.com/sharedfiles/filedetails/?id=3775423228)
+
 ---
 
 ## What it does
