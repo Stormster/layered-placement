@@ -23,11 +23,6 @@ local OPTIONS = {
         label = "Easier reach on catwalks",
         tooltip = "Finish Place/Pickup when you're already next to a catwalk/railing tile but normal pathing fails. Railing floating place still works without this; this helps wall hangings and other highs.",
     },
-    {
-        id = "lightInteract",
-        label = "Easier railing light controls",
-        tooltip = "Make turn on/off and right-click menus work better for high and railing lights. Only the light you click is targeted. Independent of placement options.",
-    },
 }
 
 --- Read current tickbox values into runtime flags.
@@ -49,7 +44,6 @@ local function applyFromUiValues()
             .. " floating=" .. tostring(LayeredPlacement.allowFloatingPlace())
             .. " mesh=" .. tostring(LayeredPlacement.allowMeshFloorAim())
             .. " reach=" .. tostring(LayeredPlacement.allowCatwalkReach())
-            .. " lights=" .. tostring(LayeredPlacement.allowLightInteract())
     )
 end
 

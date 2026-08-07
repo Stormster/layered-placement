@@ -11,8 +11,5 @@
     "Sandbox_LayeredPlacement_MeshFloorAim_tooltip": "Allow players upstairs to aim Place and Pickup at their current floor when the cursor falls through a grated floor to the level below.",
 
     "Sandbox_LayeredPlacement_CatwalkReach": "Allow easier catwalk reach",
-    "Sandbox_LayeredPlacement_CatwalkReach_tooltip": "Allow Place and Pickup to finish when a player is already near a catwalk or railing tile but normal pathing cannot reach it.",
-
-    "Sandbox_LayeredPlacement_LightInteract": "Allow easier railing light controls",
-    "Sandbox_LayeredPlacement_LightInteract_tooltip": "Allow high and railing lights to show reliable turn on/off controls and respond when directly clicked. Only the clicked light is targeted."
+    "Sandbox_LayeredPlacement_CatwalkReach_tooltip": "Allow Place and Pickup to finish when a player is already near a catwalk or railing tile but normal pathing cannot reach it."
 }

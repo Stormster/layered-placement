@@ -14,8 +14,7 @@ In vanilla Project Zomboid, decorating with Move Furniture is limited: lights, p
 
 - Hang lights over tables, counters, and other furniture  
 - Place lamps and decor on railings and catwalks  
-- Run outdoor and railing lights on battery, so they still switch on where a room has no power  
-- Reliably turn high and railing lights on or off by clicking the light or using its context menu
+- Run outdoor and railing lights on battery, so they still turn on when placed where a room has no power  
 - Keep normal floor stacking (crates, tables, and so on) and the usual skill / tool requirements  
 
 Server owners choose which features are allowed for everyone in Sandbox Options. Players can still turn allowed features off for themselves in Mod Options, but cannot enable a feature the server has disabled.
