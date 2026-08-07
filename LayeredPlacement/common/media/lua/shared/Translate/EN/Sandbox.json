@@ -13,6 +13,6 @@
     "Sandbox_LayeredPlacement_CatwalkReach": "Allow easier catwalk reach",
     "Sandbox_LayeredPlacement_CatwalkReach_tooltip": "Allow Place and Pickup to finish when a player is already near a catwalk or railing tile but normal pathing cannot reach it.",
 
-    "Sandbox_LayeredPlacement_LightInteract": "Easier railing light controls (disabled - in development)",
-    "Sandbox_LayeredPlacement_LightInteract_tooltip": "Turned off in this version and ignored even if you enable it. Clicking near a lamp could toggle a light you were not aiming at, so lights use the normal controls for now. This needs more development and will return in a later update. Placing lights on railings is unaffected."
+    "Sandbox_LayeredPlacement_LightInteract": "Allow easier railing light controls",
+    "Sandbox_LayeredPlacement_LightInteract_tooltip": "Allow high and railing lights to show reliable turn on/off controls and respond when directly clicked. Only the clicked light is targeted."
 }
