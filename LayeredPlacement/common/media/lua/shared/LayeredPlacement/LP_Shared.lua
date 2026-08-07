@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.29"
+LayeredPlacement.VERSION = "1.6.30"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
