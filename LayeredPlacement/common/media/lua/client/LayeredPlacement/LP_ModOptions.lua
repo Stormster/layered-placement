@@ -25,10 +25,8 @@ local OPTIONS = {
     },
     {
         id = "lightInteract",
-        label = "Easier railing light controls (disabled - in development)",
-        tooltip = "Turned off in this version and ignored even if you tick it. Clicking near a lamp could toggle a light you were not aiming at, so lights use the normal controls for now. It needs more development and will be back in a later update. Placing lights on railings is unaffected.",
-        default = false,
-        serverNote = false,
+        label = "Easier railing light controls",
+        tooltip = "Make turn on/off and right-click menus work better for high and railing lights. Only the light you click is targeted. Independent of placement options.",
     },
 }
 
@@ -43,12 +41,6 @@ local function applyFromUiValues()
     for _, def in ipairs(OPTIONS) do
         local opt = opts:getOption(def.id)
         if opt and opt.getValue then
-            -- A feature held back in code must not show a ticked box.
-            if def.default == false and opt.setValue then
-                pcall(function()
-                    opt:setValue(false)
-                end)
-            end
             LayeredPlacement.setOption(def.id, LayeredPlacement.coerceBool(opt:getValue(), true))
         end
     end
