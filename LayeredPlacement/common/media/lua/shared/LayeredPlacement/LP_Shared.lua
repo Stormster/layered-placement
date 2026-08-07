@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.27"
+LayeredPlacement.VERSION = "1.6.28"
 
 --- ForceSingleItem multi-sprite moveables (Small Lights, etc.) report
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place

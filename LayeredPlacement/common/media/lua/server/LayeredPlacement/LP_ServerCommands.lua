@@ -279,11 +279,14 @@ local function onSetLightState(player, args)
         LayeredPlacement.log("server setLightState: light not found")
         return
     end
-    -- Only lights this mod placed or marked for battery power. That keeps the
-    -- state persistence working while the easier controls are off, without
-    -- handing clients a switch for every light on the map.
-    if not LayeredPlacement.managesLight(light) then
-        LayeredPlacement.log("server setLightState: not a Layered Placement light")
+    -- Lights this mod already tracks stay switchable whatever the settings say,
+    -- so restored state never fights a player. Any other light needs the easier
+    -- controls allowed here: without that check a client could switch every
+    -- light on the map through this command.
+    if not LayeredPlacement.managesLight(light)
+        and not LayeredPlacement.serverAllows("lightInteract")
+    then
+        LayeredPlacement.log("server setLightState: light interaction disabled for this server")
         return
     end
     local desired = args.desired and true or false
