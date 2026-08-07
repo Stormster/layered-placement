@@ -230,73 +230,6 @@ local function onPickUpFloating(player, args)
     finish("pickUpFloating", player, args, true, nil)
 end
 
-local function lightFromArgs(square, args)
-    if not square then
-        return nil
-    end
-    local objects = square:getObjects()
-    if not objects then
-        return nil
-    end
-    local index = tonumber(args and args.objectIndex)
-    if index and index >= 0 and index < objects:size() then
-        local obj = objects:get(index)
-        if obj and instanceof(obj, "IsoLightSwitch") then
-            return obj
-        end
-    end
-    local spriteName = args and args.spriteName
-    for i = 0, objects:size() - 1 do
-        local obj = objects:get(i)
-        if obj and instanceof(obj, "IsoLightSwitch") then
-            local objSprite = obj:getSprite()
-            if not spriteName or (objSprite and objSprite:getName() == spriteName) then
-                return obj
-            end
-        end
-    end
-    return nil
-end
-
---- Dedicated-server authority for high/floating light interaction. The vanilla
---- client timed action toggles the light but does not persist our desired state
---- on the server, which made lights revert after a relog.
-local function onSetLightState(player, args)
-    if not player or not instanceof(player, "IsoPlayer") then
-        return
-    end
-    local square = squareFromArgs(args)
-    if not square or not LayeredPlacement.withinBrushReach(player, square) then
-        LayeredPlacement.log("server setLightState: bad square/out of reach")
-        return
-    end
-    if blockedBySafehouse(player, square) then
-        LayeredPlacement.log("server setLightState: blocked by safehouse")
-        return
-    end
-    local light = lightFromArgs(square, args)
-    if not light then
-        LayeredPlacement.log("server setLightState: light not found")
-        return
-    end
-    -- Lights this mod already tracks stay switchable whatever the settings say,
-    -- so restored state never fights a player. Any other light needs the easier
-    -- controls allowed here: without that check a client could switch every
-    -- light on the map through this command.
-    if not LayeredPlacement.managesLight(light)
-        and not LayeredPlacement.serverAllows("lightInteract")
-    then
-        LayeredPlacement.log("server setLightState: light interaction disabled for this server")
-        return
-    end
-    local desired = args.desired and true or false
-    if LayeredPlacement.setLightGroupState(light, desired) then
-        LayeredPlacement.log("server setLightState=" .. tostring(desired) .. " @ "
-            .. tostring(args.x) .. "," .. tostring(args.y) .. "," .. tostring(args.z)
-            .. " group=" .. tostring(#LayeredPlacement.collectLightGroup(light)))
-    end
-end
-
 local function onClientCommand(module, command, player, args)
     if module ~= MODULE then
         return
@@ -307,8 +240,6 @@ local function onClientCommand(module, command, player, args)
         onPlaceLayered(player, args)
     elseif command == "pickUpFloating" then
         onPickUpFloating(player, args)
-    elseif command == "setLightState" then
-        onSetLightState(player, args)
     end
 end
 

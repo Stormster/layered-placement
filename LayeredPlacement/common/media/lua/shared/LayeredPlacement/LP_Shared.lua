@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.30"
+LayeredPlacement.VERSION = "1.6.31"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -330,7 +330,6 @@ LayeredPlacement.options = LayeredPlacement.options or {
     floatingPlace = true,  -- railings / catwalks / wall lamps without a solid wall
     meshFloorAim = true,   -- Place/Pickup aim at your floor when the mouse falls through mesh
     catwalkReach = true,   -- place/pickup when you're next to a tile but pathing fails
-    lightInteract = true,  -- easier turn on/off and right-click for railing lamps
 }
 
 --- Support-facing log: one line per real event (boot, place, pickup, server
@@ -503,7 +502,6 @@ local SANDBOX_OPTION_NAMES = {
     floatingPlace = "FloatingPlace",
     meshFloorAim = "MeshFloorAim",
     catwalkReach = "CatwalkReach",
-    lightInteract = "LightInteract",
 }
 
 --- Missing values mean enabled so old saves and main-menu contexts retain the
@@ -544,13 +542,9 @@ function LayeredPlacement.allowCatwalkReach()
     return flag("catwalkReach")
 end
 
-function LayeredPlacement.allowLightInteract()
-    return flag("lightInteract")
-end
-
 --- Lights this mod placed or opted into battery power. Their on/off state is
---- ours to persist even with the easier controls off, otherwise a vanilla toggle
---- gets undone by the state we restore on chunk load.
+--- ours to persist on chunk load, otherwise a vanilla toggle can fight the
+--- battery/wanted state we restore.
 function LayeredPlacement.managesLight(obj)
     if not obj or not obj.getModData or not instanceof(obj, "IsoLightSwitch") then
         return false
@@ -757,7 +751,8 @@ function LayeredPlacement.collectLightGroup(obj)
     return group
 end
 
---- Set on/off for a light and every multi-tile partner.
+--- Set on/off for a light and every multi-tile partner (used when placing so
+--- string lights light as a group). Toggle/menu interaction is vanilla.
 function LayeredPlacement.setLightGroupState(obj, desired)
     local group = LayeredPlacement.collectLightGroup(obj)
     local any = false
@@ -767,34 +762,6 @@ function LayeredPlacement.setLightGroupState(obj, desired)
         end
     end
     return any
-end
-
---- Toggle immediately in SP/listen-host, or ask the dedicated server to do it.
---- Always applies the full multi-tile group so string lights don't half-lit.
-function LayeredPlacement.requestLightState(character, obj, desired)
-    if not character or not obj or not obj:getSquare() then
-        return false
-    end
-    desired = desired and true or false
-    if LayeredPlacement.canMutateWorld() then
-        return LayeredPlacement.setLightGroupState(obj, desired)
-    end
-    if not sendClientCommand then
-        return false
-    end
-    -- Optimistic local visual so the menu click isn't a no-op while waiting
-    -- for the server packet (still authoritative via setLightState).
-    LayeredPlacement.setLightGroupState(obj, desired)
-    local square = obj:getSquare()
-    sendClientCommand(character, "LayeredPlacement", "setLightState", {
-        x = square:getX(),
-        y = square:getY(),
-        z = square:getZ(),
-        objectIndex = obj:getObjectIndex(),
-        spriteName = obj:getSprite() and obj:getSprite():getName() or nil,
-        desired = desired,
-    })
-    return true
 end
 
 --- Any placement helper that changes what Place will accept.
@@ -807,7 +774,6 @@ function LayeredPlacement.isEnabled()
     return LayeredPlacement.isPlaceHelpEnabled()
         or LayeredPlacement.allowMeshFloorAim()
         or LayeredPlacement.allowCatwalkReach()
-        or LayeredPlacement.allowLightInteract()
 end
 
 --- Coerce Mod Options / UI values to a real boolean.

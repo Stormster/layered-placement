@@ -1,6 +1,6 @@
 Decorate with Pickup/Place Furniture without using Brush Tool but the way the admin brush allows.
 
-Hang lights over tables and posters, and put lamps on railings and catwalks. Outdoor and railing lights use battery when there is no building power, so they still switch on where a room has none. High and railing lights respond when directly clicked and show reliable on/off controls in their context menu.
+Hang lights over tables and posters, and put lamps on railings and catwalks. Outdoor and railing lights use battery when there is no building power, so they still turn on when placed where a room has none.
 
 Server owners choose allowed features in Sandbox Options. Players can turn allowed features off for themselves in Mod Options. Crates/tables still stack normally. Skills and tools still matter.
 
