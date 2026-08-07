@@ -1,10 +1,11 @@
 require "LayeredPlacement/LP_Shared"
 require "Moveables/ISMoveableSpriteProps"
 
---- High IsoLightSwitch helpers: railing/fence/catwalk lights are hard for vanilla
---- to target (isWallTo, canSwitchLight needs room power). We treat every IsHigh
---- lightswitch in reach as interactable, keep them on battery so outdoor placements
---- still switch after relog, and always expose Turn On/Off in the context menu.
+--- IsoLightSwitch helpers for the lights vanilla cannot serve: railing, fence and
+--- catwalk lamps it will not path to, and wall lights (neon signs and the like)
+--- whose canSwitchLight is false, which hides Turn On/Off from their menu. Those
+--- keep battery power so outdoor placements still switch after relog, and always
+--- get a working toggle. Lights vanilla can already switch are left alone.
 
 local function propsOf(object)
     local spr = object and object:getSprite()
@@ -21,6 +22,28 @@ local function isHighLightSwitch(object)
     end
     local props = propsOf(object)
     return props and props:has("IsHigh") and true or false
+end
+
+--- Vanilla hides Turn On/Off behind canSwitchLight: no room power, no bulb, or
+--- a battery the engine will not count. Those are the lights we drive directly.
+local function vanillaCanSwitch(light)
+    if not light or not light.canSwitchLight then
+        return false
+    end
+    local ok, can = pcall(function()
+        return light:canSwitchLight()
+    end)
+    return (ok and can) and true or false
+end
+
+--- Lights our direct toggle takes over: high ones, because vanilla cannot path
+--- to a railing or catwalk, plus any light vanilla itself refuses to switch. A
+--- light vanilla can switch keeps its normal power rules and timed action.
+local function canForceToggle(light)
+    if not light or not instanceof(light, "IsoLightSwitch") then
+        return false
+    end
+    return isHighLightSwitch(light) or not vanillaCanSwitch(light)
 end
 
 local function chebyshev(playerObj, square)
@@ -237,20 +260,36 @@ local function focusSquares(playerObj, worldobjects)
     return { playerObj and (playerObj:getSquare() or playerObj:getCurrentSquare()) }
 end
 
---- Lights the click actually landed on. A switch that is not IsHigh still counts
---- as a hit: vanilla targets those correctly, so we must leave the menu alone
---- instead of redirecting it to some other light nearby.
+--- Lights the click actually landed on. The engine resolved sprite offsets when
+--- it built this list, so everything in it is something the cursor was over. A
+--- high light wins the tie: a railing lamp and the wall it hangs on share a tile.
 local function clickedLights(worldobjects)
-    local high, anyLight = {}, false
+    local high, plain = {}, {}
     forEachWorldObject(worldobjects, function(obj)
         if instanceof(obj, "IsoLightSwitch") then
-            anyLight = true
             if isHighLightSwitch(obj) then
                 table.insert(high, obj)
+            else
+                table.insert(plain, obj)
             end
         end
     end)
-    return high, anyLight
+    if #high > 0 then
+        return high
+    end
+    return plain
+end
+
+local function nearestInReach(playerObj, lights)
+    local best, bestDist = nil, 999
+    for i = 1, #lights do
+        local square = lights[i]:getSquare()
+        local dist = chebyshev(playerObj, square)
+        if dist < bestDist and inLightReach(playerObj, square) then
+            best, bestDist = lights[i], dist
+        end
+    end
+    return best
 end
 
 --- Pick the light the player aimed at, not the one nearest the player: ranking
@@ -260,13 +299,13 @@ local function pickBestLight(playerObj, worldobjects)
     if not playerObj then
         return nil
     end
-    local candidates, anyLight = clickedLights(worldobjects)
-    if #candidates == 0 then
-        if anyLight then
-            return nil
-        end
-        candidates = collectHighLightsNear(playerObj, worldobjects)
+    -- Clicked lights skip the focus test entirely. Scoring them by tile is what
+    -- made a hanging light miss whenever it drew from its other grid half.
+    local clicked = nearestInReach(playerObj, clickedLights(worldobjects))
+    if clicked then
+        return clicked
     end
+    local candidates = collectHighLightsNear(playerObj, worldobjects)
 
     local focus = focusSquares(playerObj, worldobjects)
     local best, bestFocus, bestPlayer = nil, 999, 999
@@ -283,34 +322,74 @@ local function pickBestLight(playerObj, worldobjects)
     return best
 end
 
-local function contextHasToggle(context)
+--- addGetUpOption stores the real callback in param1 and its first argument in
+--- param3. Matching on those instead of the label keeps a stove's Turn On from
+--- passing for a light's, and still recognises a toggle another mod added.
+local function isToggleFor(opt, light)
+    return opt ~= nil
+        and opt.param1 == ISWorldObjectContextMenu.onToggleLight
+        and opt.param3 == light
+end
+
+local function subMenuOf(context, opt)
+    if not opt or not opt.subOption or not context.getSubMenu then
+        return nil
+    end
+    local sub = context:getSubMenu(opt.subOption)
+    if sub == context then
+        return nil
+    end
+    return sub
+end
+
+--- Vanilla nests Turn On/Off inside the light's own submenu, so a top-level scan
+--- alone reports "no toggle" for every working light and stacks a second one.
+local function menuHasToggle(context, light)
     if not context or not context.options then
         return false
     end
-    local turnOn = getText("ContextMenu_Turn_On")
-    local turnOff = getText("ContextMenu_Turn_Off")
-    local n = context.numOptions or 0
-    for i = 1, n do
-        local opt = context.options[i]
-        if opt and (opt.name == turnOn or opt.name == turnOff) then
+    for _, opt in ipairs(context.options) do
+        if isToggleFor(opt, light) then
             return true
         end
-        -- Submenus: option may have subOption numbers via context structure
-    end
-    if context.getSubMenu then
-        -- Fall through — we'll still add a top-level toggle if unsure
+        local sub = subMenuOf(context, opt)
+        if sub and sub.options then
+            for _, subOpt in ipairs(sub.options) do
+                if isToggleFor(subOpt, light) then
+                    return true
+                end
+            end
+        end
     end
     return false
 end
 
-local function addDirectToggle(context, light, player, worldobjects)
-    if not context or not light then
+--- The submenu hanging off the light's own row, so our fallback toggle lands
+--- where a player looks for it rather than loose at the top of the menu.
+local function lightSubMenu(context, light)
+    local title = light.getTileName and light:getTileName()
+    if not title or not context.options then
+        return nil
+    end
+    for _, opt in ipairs(context.options) do
+        if opt and opt.name == title then
+            local sub = subMenuOf(context, opt)
+            if sub then
+                return sub
+            end
+        end
+    end
+    return nil
+end
+
+local function addDirectToggle(menu, light, player, worldobjects)
+    if not menu or not light then
         return
     end
     local label = (light.isActivated and light:isActivated())
         and getText("ContextMenu_Turn_Off")
         or getText("ContextMenu_Turn_On")
-    local opt = context:addGetUpOption(
+    local opt = menu:addGetUpOption(
         label,
         worldobjects,
         ISWorldObjectContextMenu.onToggleLight,
@@ -344,19 +423,26 @@ local function onPreFill(player, context, worldobjects, test)
     LayeredPlacement.trace("prefill light " .. tostring(light:getSprite() and light:getSprite():getName()))
 end
 
---- Always expose Turn On/Off for high lights in reach (vanilla often skips when
---- canSwitchLight is false outdoors, or isSomethingTo sees a railing).
+--- Always expose Turn On/Off for lights in reach (vanilla skips the toggle
+--- whenever canSwitchLight is false: no room power, no bulb, drained battery).
 local function onFill(player, context, worldobjects, test)
     if not LayeredPlacement.allowLightInteract() or not context then
         return
     end
     local playerObj = getSpecificPlayer(player)
-    local light = pickBestLight(playerObj, worldobjects)
+    -- fetchVars is cleared and rebuilt from the clicked objects before any
+    -- option is created, so the light vanilla resolved is the one this menu is
+    -- about. Guessing again here is what let a neighbouring lamp take over.
+    local fetch = ISWorldObjectContextMenu.fetchVars
+    local light = fetch and fetch.lightSwitch
+    if light and not inLightReach(playerObj, light:getSquare()) then
+        light = nil
+    end
+    light = light or pickBestLight(playerObj, worldobjects)
     if not light then
         return
     end
     refreshBatteryLight(light)
-    local fetch = ISWorldObjectContextMenu.fetchVars
     if fetch then
         fetch.lightSwitch = light
     end
@@ -365,24 +451,15 @@ local function onFill(player, context, worldobjects, test)
         return true
     end
 
-    local title = light:getTileName()
-    local hasRow = false
-    local n = context.numOptions or 0
-    for i = 1, n do
-        local opt = context.options[i]
-        if opt and opt.name == title then
-            hasRow = true
-            break
-        end
-    end
-    if not hasRow then
+    local menu = lightSubMenu(context, light)
+    if not menu then
         ISWorldObjectContextMenu.doLightSwitchOption(false, context, player)
+        menu = lightSubMenu(context, light)
     end
 
-    -- Guarantee a working toggle even when canSwitchLight was false.
-    if not contextHasToggle(context) then
-        addDirectToggle(context, light, player, worldobjects)
-        LayeredPlacement.trace("fill direct toggle " .. tostring(title))
+    if not menuHasToggle(context, light) then
+        addDirectToggle(menu or context, light, player, worldobjects)
+        LayeredPlacement.trace("fill direct toggle " .. tostring(light:getTileName()))
     end
 end
 
@@ -438,7 +515,7 @@ local function toggleHighLight(playerObj, light)
 end
 
 function ISWorldObjectContextMenu.onToggleLight(worldobjects, light, player)
-    if LayeredPlacement.allowLightInteract() and isHighLightSwitch(light) then
+    if LayeredPlacement.allowLightInteract() and canForceToggle(light) then
         local playerObj = getSpecificPlayer(player)
         if toggleHighLight(playerObj, light) then
             return
@@ -472,7 +549,7 @@ end
 local _isSomethingTo = ISWorldObjectContextMenu.isSomethingTo
 
 function ISWorldObjectContextMenu.isSomethingTo(item, player)
-    if LayeredPlacement.allowLightInteract() and isHighLightSwitch(item) then
+    if LayeredPlacement.allowLightInteract() and canForceToggle(item) then
         local playerObj = getSpecificPlayer(player)
         if playerObj and item:getSquare() and inLightReach(playerObj, item:getSquare()) then
             return false
@@ -496,8 +573,12 @@ local function hookClickHandler()
     local _doClickSpecificObject = ISObjectClickHandler.doClickSpecificObject
 
     function ISObjectClickHandler.doClickLightSwitch(object, playerNum, playerObj)
-        if LayeredPlacement.allowLightInteract() and isHighLightSwitch(object) then
-            return toggleHighLight(playerObj, object)
+        if LayeredPlacement.allowLightInteract() and canForceToggle(object) then
+            if toggleHighLight(playerObj, object) then
+                return true
+            end
+            -- Out of reach or already gone: let vanilla answer for the click
+            -- instead of reporting a handled one that did nothing.
         end
         return _doClickLightSwitch(object, playerNum, playerObj)
     end
