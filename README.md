@@ -1,6 +1,6 @@
 # Layered Placement
 
-**A quality-of-life mod for [Project Zomboid](https://projectzomboid.com/) (Build 42)** that makes furniture placement feel closer to the admin brush — without giving up normal Pickup / Place Furniture gameplay.
+**A quality-of-life mod for [Project Zomboid](https://projectzomboid.com/) (Build 42)** that makes furniture placement feel closer to the admin brush, without giving up normal Pickup / Place Furniture gameplay.
 
 Available on the [Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3775423228).
 
@@ -14,8 +14,9 @@ In vanilla Project Zomboid, decorating with Move Furniture is limited: lights, p
 
 - Hang lights over tables, counters, and other furniture  
 - Place lamps and decor on railings and catwalks  
+- Put furniture under overhead strip lights, like the long fluorescent tubes the game normally blocks  
 - Run outdoor and railing lights on battery, so they still turn on when placed where a room has no power  
-- Keep normal floor stacking (crates, tables, and so on) and the usual skill / tool requirements  
+- Keep the usual skill and tool requirements, and normal stacking for crates, tables, and other floor furniture  
 
 Server owners choose which features are allowed for everyone in Sandbox Options. Players can still turn allowed features off for themselves in Mod Options, but cannot enable a feature the server has disabled.
 
@@ -35,13 +36,13 @@ If placement behaves differently in multiplayer than in singleplayer, the logs s
 - Dedicated server: `Zomboid\server-console.txt` on the machine running the server
 - Every mod line is prefixed with `[LayeredPlacement]`, starting with a load line naming the version and whether that process writes to the world locally or through the server
 
-Useful lines to look for: `client requested placeLayered …` (client asked), `server placeLayered ok …` (server did it), `server placeLayered refused … (reason)`, and `no server reply for … — is Layered Placement enabled and up to date on the server?`.
+Useful lines to look for: `client requested placeLayered …` (client asked), `server placeLayered ok …` (server did it), `server placeLayered refused … (reason)`, and `no server reply for …`, which usually means the mod is missing or out of date on the server.
 
 ---
 
 ## Companion mod
 
-Not required, and not a dependency — Layered Placement does not touch the Brush
+Not required, and not a dependency. Layered Placement does not touch the Brush
 Tool and works fine without this. It is listed here because the symptoms look
 alike and the two get confused.
 
@@ -49,12 +50,12 @@ alike and the two get confused.
 (`BrushToolSaveFix`) fixes a separate Build 42 multiplayer bug where **admin**
 Brush Tool tile edits are cosmetic only: painted or destroyed tiles look right
 until the chunk unloads, then revert. If you run a server, use the Brush Tool,
-and see tiles reverting after a relog or restart, that is the bug — a different
-one from anything here.
+and see tiles reverting after a relog or restart, that is the bug, and it is a
+different one from anything here.
 
 ## Play the mod
 
-Subscribe on Steam — that is the supported way to install and receive updates:
+Subscribe on Steam. That is the supported way to install and receive updates:
 
 **[Layered Placement on Steam Workshop](https://steamcommunity.com/sharedfiles/filedetails/?id=3775423228)**
 
@@ -78,6 +79,6 @@ Do not link these folders with a junction or symlink. Project Zomboid's mod scan
 
 ## Author
 
-**Storm** — Project Zomboid mod author
+**Storm**, Project Zomboid mod author
 
 Workshop ID: `3775423228`

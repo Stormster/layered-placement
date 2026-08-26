@@ -604,7 +604,7 @@ local function watchPendingRequests()
             pendingRequests[key] = nil
             pendingCount = pendingCount - 1
             LayeredPlacement.log("no server reply for " .. tostring(key)
-                .. " — is Layered Placement enabled and up to date on the server?")
+                .. ". Is Layered Placement enabled and up to date on the server?")
         end
     end
 end
