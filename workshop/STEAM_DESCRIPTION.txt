@@ -1,6 +1,6 @@
 Decorate with Pickup/Place Furniture without using Brush Tool but the way the admin brush allows.
 
-Hang lights over tables and posters, and put lamps on railings and catwalks. Put furniture under overhead strip lights, like the long fluorescent tubes the game normally will not let you build under. Outdoor and railing lights use battery when there is no building power, so they still turn on when placed where a room has none.
+Hang lights over tables and posters, and put lamps on railings and catwalks. Cabinets over fridges and much more. Put furniture under overhead strip lights, like the long fluorescent tubes the game normally will not let you build under. Outdoor and railing lights use battery when there is no building power, so they still turn on when placed.
 
 Server owners choose allowed features in Sandbox Options. Players can turn allowed features off for themselves in Mod Options. Crates, tables and other floor furniture still stack by the normal rules, and skills and tools still matter.
 
@@ -9,7 +9,7 @@ B42.20+. Safe mid-save. Multiplayer supported, so enable it on the server and al
 COMPANION MOD (optional, not required)
 
 Brush Tool Save Fix: https://steamcommunity.com/sharedfiles/filedetails/?id=3775272983
-A separate B42 multiplayer bug: admin Brush Tool tile edits are cosmetic only and revert once the chunk unloads. Layered Placement does not use the Brush Tool and works fine without it, but the two get confused because tiles vanishing looks the same from the outside. If you run a server, use the Brush Tool, and see edits reverting after a relog or restart, that is the one you want.
+A separate B42 multiplayer bug where admin Brush Tool tile edits are cosmetic only and revert once the chunk unloads. Layered Placement does not use the Brush Tool and works fine without it, but tiles vanishing looks the same from the outside and the two get confused. If you run a server, use the Brush Tool, and see edits reverting after a relog or restart, that is the one you want.
 
 My mods are literally fueled by my caffeine addiction.
 If I helped you, buying me a coffee would be AMAZING. Thanks guys. https://buymeacoffee.com/stormster10
