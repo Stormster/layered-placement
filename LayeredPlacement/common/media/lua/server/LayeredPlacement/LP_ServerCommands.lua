@@ -214,6 +214,14 @@ local function onPickUpFloating(player, args)
     if not props then
         return finish("pickUpFloating", player, args, false, reason)
     end
+    -- Read the footprint before the object goes. Afterwards there is nothing
+    -- left to read the partner offsets from, and any partner still carrying its
+    -- tag respawns this light on the next chunk load.
+    local target = LayeredPlacement.findSpriteObject(square, args.spriteName)
+    local originX, originY, originZ, parts
+    if target then
+        originX, originY, originZ, parts = LayeredPlacement.gridOriginOf(target)
+    end
     local ok, result = pcall(function()
         return props:pickUpMoveable(player, square, true, true)
     end)
@@ -222,6 +230,13 @@ local function onPickUpFloating(player, args)
     end
     if result == nil or result == false then
         return finish("pickUpFloating", player, args, false, "object already gone or unavailable")
+    end
+    if parts then
+        local cleared = LayeredPlacement.clearMultiGridTags(originX, originY, originZ, parts)
+        if cleared > 0 then
+            LayeredPlacement.log("cleared " .. tostring(cleared)
+                .. " leftover multi-grid tag(s) after pickup")
+        end
     end
     LayeredPlacement.markConstruction(square)
     if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then

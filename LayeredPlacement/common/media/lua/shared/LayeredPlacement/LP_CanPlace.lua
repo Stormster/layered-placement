@@ -819,6 +819,10 @@ local function cheatPickUpFloating(props, character, square, createItem)
             end
         end
         if removed > 0 then
+            -- Drop the footprint tags so the LoadGridsquare restore cannot put
+            -- back what we just removed. A half that failed to remove keeps its
+            -- tag otherwise, and that is what makes a picked-up light reappear.
+            LayeredPlacement.clearMultiGridTags(ox, oy, oz, grid.parts)
             giveItem(pendingItem)
             if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
                 ISMoveableCursor.clearCacheForAllPlayers()
@@ -868,6 +872,12 @@ local function cheatPickUpFloating(props, character, square, createItem)
             end
         end
         if removed > 0 then
+            -- Same reason as the lpGrid branch above; the footprint comes from
+            -- the sprite grid here because these parts were never tagged.
+            local clearParts = LayeredPlacement.gridPartsFromSprite(foundSpr)
+            if clearParts then
+                LayeredPlacement.clearMultiGridTags(sX, sY, sZ, clearParts)
+            end
             giveItem(pendingItem)
             if ISMoveableCursor and ISMoveableCursor.clearCacheForAllPlayers then
                 ISMoveableCursor.clearCacheForAllPlayers()
