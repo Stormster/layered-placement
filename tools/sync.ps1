@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Copies the mod from this repo into the Zomboid mods folder and the Workshop
     staging folder.
@@ -66,6 +66,10 @@ function Sync-Tree {
     if ($LASTEXITCODE -ge 8) {
         throw "robocopy failed with exit code $LASTEXITCODE ($From -> $To)"
     }
+    # robocopy uses 0-7 to report success (1 = files were copied). Left as is it
+    # becomes this script's own exit code, so every run that actually copied
+    # something looked like a failure to anything checking it.
+    $global:LASTEXITCODE = 0
 }
 
 function Sync-Metadata {
