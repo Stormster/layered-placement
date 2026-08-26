@@ -135,6 +135,7 @@ end
 
 local _canPlaceMoveable = ISMoveableSpriteProps.canPlaceMoveable
 local _canPlaceMoveableInternal = ISMoveableSpriteProps.canPlaceMoveableInternal
+local _isFreeTile = ISMoveableSpriteProps.isFreeTile
 local _canPickUpMoveable = ISMoveableSpriteProps.canPickUpMoveable
 local _pickUpMoveable = ISMoveableSpriteProps.pickUpMoveable
 local _placeMoveable = ISMoveableSpriteProps.placeMoveable
@@ -1218,6 +1219,27 @@ function ISMoveableSpriteProps:placeMoveable(character, square, origSpriteName, 
         forceAllow = true
     end
     return _placeMoveable(self, character, square, origSpriteName, forceAllow)
+end
+
+--- Overhead fluorescent tubes (and other wall-mounted highs) set BlocksPlacement,
+--- and vanilla isFreeTile refuses the whole square on that flag without caring
+--- which layer set it -- so a strip light made the tile under it unbuildable.
+--- Relax it only when every blocker is moveable high decor; trees and cuttables
+--- stay refused exactly as before, and so does anything low.
+--- Note this only reopens the tile: vanilla still applies its own layer rule
+--- afterwards ("high object present, so the incoming item must be low"), which
+--- is left alone deliberately.
+function ISMoveableSpriteProps:isFreeTile(square)
+    if _isFreeTile(self, square) then
+        return true
+    end
+    if not square or not LayeredPlacement.allowLayeredPlace() then
+        return false
+    end
+    if square:has(IsoFlagType.canBeCut) or square:has("tree") then
+        return false
+    end
+    return LayeredPlacement.blocksPlacementIsHighsOnly(square)
 end
 
 function ISMoveableSpriteProps:canPlaceMoveableInternal(character, square, item, forceTypeObject)

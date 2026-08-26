@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.33"
+LayeredPlacement.VERSION = "1.6.34"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -1148,6 +1148,78 @@ local function pickupAimScore(square)
         end
     end
     return score
+end
+
+--- Walk one object list. Returns false as soon as a blocker turns out not to be
+--- moveable high decor, plus how many blockers were seen.
+--- Deliberately closure-free: isFreeTile is called while the placement cursor
+--- renders, so this runs every frame over a refused tile.
+local function scanPlacementBlockers(list)
+    if not list then
+        return true, 0
+    end
+    local found = 0
+    for i = 0, list:size() - 1 do
+        local obj = list:get(i)
+        local spr = obj and obj.getSprite and obj:getSprite()
+        local props = spr and spr.getProperties and spr:getProperties()
+        if props and props:has("BlocksPlacement") then
+            found = found + 1
+            if not (props:has("IsHigh") and props:has("IsMoveAble")) then
+                return false, found
+            end
+        end
+        -- Mirrors vanilla: some moveables (mirrors and the like) hang off a wall
+        -- as child sprites rather than as objects of their own.
+        local children = obj and obj.getChildSprites and obj:getChildSprites()
+        if children then
+            for j = 0, children:size() - 1 do
+                local child = children:get(j)
+                local childSpr = child and child.getParentSprite and child:getParentSprite()
+                local childProps = childSpr and childSpr.getProperties and childSpr:getProperties()
+                if childProps and childProps:has("BlocksPlacement") then
+                    found = found + 1
+                    if not (childProps:has("IsHigh") and childProps:has("IsMoveAble")) then
+                        return false, found
+                    end
+                end
+            end
+        end
+    end
+    return true, found
+end
+
+--- True when the only thing refusing this square is moveable high decor.
+---
+--- BlocksPlacement is an OR across every object on the tile, so a single
+--- overhead fluorescent tube makes the whole square unbuildable -- you cannot
+--- put a sofa under a strip light. Vanilla's own object-by-object check is
+--- already layer-aware (a high blocker only blocks a high item); isFreeTile is
+--- the blunt one that is not, and that is what this answers for.
+---
+--- Every blocker has to be a moveable high before we relax it. One IsLow
+--- blocker -- a desk, a glass display, a bush -- and the square stays refused,
+--- because the flag is a square-level OR and letting the light through would
+--- silently let that one through too. Non-moveable highs (radio towers, wall
+--- detailing, church trim) are map structure rather than decor, so they keep
+--- blocking as well.
+function LayeredPlacement.blocksPlacementIsHighsOnly(square)
+    if not square or not square.getObjects then
+        return false
+    end
+    local ok, found = scanPlacementBlockers(square:getObjects())
+    if not ok then
+        return false
+    end
+    if square.getSpecialObjects then
+        local specialOk, specialFound = scanPlacementBlockers(square:getSpecialObjects())
+        if not specialOk then
+            return false
+        end
+        found = found + specialFound
+    end
+    -- No blocker at all means the refusal came from somewhere else; not ours.
+    return found > 0
 end
 
 --- Create or fetch a grid square. force=true skips the isValidSquare gate so
