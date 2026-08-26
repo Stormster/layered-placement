@@ -42,19 +42,38 @@ local function blockedBySafehouse(player, square)
     return blocked
 end
 
-local function squareFromArgs(args)
-    if not args or args.x == nil or args.y == nil or args.z == nil then
+--- Coordinates arrive over the wire and everything downstream trusts them, so
+--- reject whatever is not a whole number before the world ever sees it. A
+--- non-number used to reach the square lookup and the create call as-is.
+local function coordsFromArgs(args)
+    if not args then
         return nil
     end
+    local x, y, z = args.x, args.y, args.z
+    if type(x) ~= "number" or type(y) ~= "number" or type(z) ~= "number" then
+        return nil
+    end
+    if x ~= math.floor(x) or y ~= math.floor(y) or z ~= math.floor(z) then
+        return nil
+    end
+    return x, y, z
+end
+
+--- Creating a missing square here is safe only because resolveRequest has
+--- already confirmed the coordinates are within the player's reach -- a few
+--- tiles, the same footing vanilla building has. force=true stays on purpose:
+--- railing and catwalk edge tiles are exactly the ones the engine calls invalid
+--- and the mod places on anyway.
+local function squareFromCoords(x, y, z)
     local cell = getCell()
     if not cell then
         return nil
     end
-    local square = cell:getGridSquare(args.x, args.y, args.z)
+    local square = cell:getGridSquare(x, y, z)
     if square then
         return square
     end
-    return LayeredPlacement.ensureGridSquare(args.x, args.y, args.z, true)
+    return LayeredPlacement.ensureGridSquare(x, y, z, true)
 end
 
 local function propsFromArgs(args)
@@ -95,9 +114,12 @@ local function resolveRequest(request, player, args, allowedKinds)
         LayeredPlacement.log("version mismatch: client " .. tostring(args.version)
             .. " vs server " .. LayeredPlacement.VERSION)
     end
-    local square = squareFromArgs(args)
+    local x, y, z = coordsFromArgs(args)
+    if x == nil then
+        return nil, nil, "bad coordinates"
+    end
     local props = propsFromArgs(args)
-    if not square or not props then
+    if not props then
         return nil, nil, "bad square/props"
     end
     local kind, option = decorKind(props)
@@ -107,16 +129,29 @@ local function resolveRequest(request, player, args, allowedKinds)
     if not LayeredPlacement.serverAllows(option) then
         return nil, nil, "disabled by Sandbox settings"
     end
+    -- Reach is checked on the coordinates, before anything is allowed to touch
+    -- the world. The square lookup used to run first and would create a missing
+    -- square, so a request that was about to be refused had already dropped an
+    -- empty square into the cell -- at whatever coordinates a client sent, which
+    -- is the same way the chunk-load restore used to eat real map data.
     -- Hanging decor may be reached from a catwalk one level up; wall decor keeps
     -- the same-floor rule the client-side action uses.
     local inReach
     if kind == "floating" then
-        inReach = LayeredPlacement.withinBrushReach(player, square)
+        inReach = LayeredPlacement.withinReachXYZ(
+            player, x, y, z, LayeredPlacement.CHEAT_REACH, LayeredPlacement.BRUSH_MAX_Z
+        )
     else
-        inReach = LayeredPlacement.withinReach(player, square, LayeredPlacement.REACH_DIST)
+        inReach = LayeredPlacement.withinReachXYZ(
+            player, x, y, z, LayeredPlacement.REACH_DIST
+        )
     end
     if not inReach then
         return nil, nil, "out of reach"
+    end
+    local square = squareFromCoords(x, y, z)
+    if not square then
+        return nil, nil, "bad square/props"
     end
     if blockedBySafehouse(player, square) then
         return nil, nil, "blocked by safehouse"

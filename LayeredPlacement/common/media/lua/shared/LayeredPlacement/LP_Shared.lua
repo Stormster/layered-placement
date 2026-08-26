@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.32"
+LayeredPlacement.VERSION = "1.6.33"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -989,24 +989,32 @@ LayeredPlacement.CHEAT_REACH = 4
 --- Looking down from a catwalk onto a ground-floor wall is Z-diff 1.
 LayeredPlacement.BRUSH_MAX_Z = 1
 
-function LayeredPlacement.chebyshev(squareA, squareB)
-    if not squareA or not squareB then
-        return 999
-    end
-    local dx = math.abs(squareA:getX() - squareB:getX())
-    local dy = math.abs(squareA:getY() - squareB:getY())
+function LayeredPlacement.chebyshevXY(x1, y1, x2, y2)
+    local dx = math.abs(x1 - x2)
+    local dy = math.abs(y1 - y2)
     if dx > dy then
         return dx
     end
     return dy
 end
 
-function LayeredPlacement.withinReach(character, square, dist, maxZ)
+function LayeredPlacement.chebyshev(squareA, squareB)
+    if not squareA or not squareB then
+        return 999
+    end
+    return LayeredPlacement.chebyshevXY(
+        squareA:getX(), squareA:getY(), squareB:getX(), squareB:getY()
+    )
+end
+
+--- Coordinate form. The server has to answer "is this in reach" *before* it is
+--- allowed to touch the world, so this must not need the square to exist yet.
+function LayeredPlacement.withinReachXYZ(character, x, y, z, dist, maxZ)
     local charSq = character and (character:getSquare() or character:getCurrentSquare())
-    if not charSq or not square then
+    if not charSq or x == nil or y == nil or z == nil then
         return false
     end
-    local dz = math.abs(charSq:getZ() - square:getZ())
+    local dz = math.abs(charSq:getZ() - z)
     if maxZ == nil then
         if dz ~= 0 then
             return false
@@ -1014,7 +1022,17 @@ function LayeredPlacement.withinReach(character, square, dist, maxZ)
     elseif dz > maxZ then
         return false
     end
-    return LayeredPlacement.chebyshev(charSq, square) <= (dist or LayeredPlacement.REACH_DIST)
+    local cheb = LayeredPlacement.chebyshevXY(charSq:getX(), charSq:getY(), x, y)
+    return cheb <= (dist or LayeredPlacement.REACH_DIST)
+end
+
+function LayeredPlacement.withinReach(character, square, dist, maxZ)
+    if not square then
+        return false
+    end
+    return LayeredPlacement.withinReachXYZ(
+        character, square:getX(), square:getY(), square:getZ(), dist, maxZ
+    )
 end
 
 --- Brush-style reach for floating highs: same floor or one level away (catwalk → ground wall).
