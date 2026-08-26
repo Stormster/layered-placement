@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.31"
+LayeredPlacement.VERSION = "1.6.32"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -160,6 +160,55 @@ function LayeredPlacement.tagMultiGridObject(obj, originX, originY, originZ, par
     end
 end
 
+--- Forget a footprint so nothing rebuilds it. Pickup has to call this: lpGrid
+--- is exactly what the LoadGridsquare restore reads to respawn missing halves,
+--- so a light picked up while a partner keeps its tag comes straight back --
+--- and comes back as a sprite the player can no longer pick up. lpWantOn and
+--- lpBatteryLight go too: either one alone still marks the object as ours and
+--- puts it back in front of the restore pass.
+--- Loaded squares only, by the same rule as the restore itself: never invent a
+--- square just to clear a tag on it.
+function LayeredPlacement.clearMultiGridTags(originX, originY, originZ, parts)
+    if originX == nil or originY == nil or originZ == nil or not parts then
+        return 0
+    end
+    local cell = getCell()
+    if not cell then
+        return 0
+    end
+    -- A queued retry holds its own copy of the footprint, so clearing the tags
+    -- alone would not stop it rebuilding what the player just picked up.
+    if LayeredPlacement.forgetGridRestore then
+        LayeredPlacement.forgetGridRestore(originX, originY, originZ)
+    end
+    local cleared = 0
+    for i = 1, #parts do
+        local part = parts[i]
+        if part and part.n and part.x ~= nil and part.y ~= nil then
+            local sq = cell:getGridSquare(originX + part.x, originY + part.y, originZ)
+            local obj = sq and LayeredPlacement.findSpriteObject(sq, part.n)
+            -- sameGridOrigin still answers after the tag is gone: it prefers the
+            -- sprite's own grid slot. Two lights hung side by side share sprite
+            -- names, so this is what stops us clearing the neighbour's tags.
+            if obj and LayeredPlacement.sameGridOrigin(obj, originX, originY, originZ) then
+                local md = obj.getModData and obj:getModData()
+                if md then
+                    md.lpGrid = nil
+                    md.lpWantOn = nil
+                    md.lpBatteryLight = nil
+                    if obj.transmitModData then
+                        pcall(function()
+                            obj:transmitModData()
+                        end)
+                    end
+                    cleared = cleared + 1
+                end
+            end
+        end
+    end
+    return cleared
+end
+
 --- Find an object on a square whose sprite name matches.
 function LayeredPlacement.findSpriteObject(square, spriteName)
     if not square or not spriteName or not square.getObjects then
@@ -231,36 +280,23 @@ function LayeredPlacement.spawnDecorSprite(square, spriteName, desiredLightState
     return obj
 end
 
---- Rebuild any missing multi-tile partners recorded on this object.
-function LayeredPlacement.restoreMultiGridPartners(obj)
-    if not obj or not LayeredPlacement.canMutateWorld() then
-        return false
+--- Rebuild one footprint onto the squares that are loaded right now.
+--- Returns how many parts were spawned, and how many had to be left because
+--- their square is not in memory. Never creates a square: see the deferred
+--- queue below for why that matters.
+local function restoreGridParts(originX, originY, originZ, parts, desiredLightState)
+    local cell = getCell()
+    if not cell then
+        return 0, parts and #parts or 0
     end
-    local square = obj.getSquare and obj:getSquare()
-    local spr = obj.getSprite and obj:getSprite()
-    if not square or not spr then
-        return false
-    end
-
-    local md = obj.getModData and obj:getModData()
-    local desiredLightState = md and md.lpWantOn
-    if desiredLightState == nil and instanceof(obj, "IsoLightSwitch") and obj.isActivated then
-        desiredLightState = obj:isActivated() and true or false
-    end
-
-    local originX, originY, originZ, parts = LayeredPlacement.gridOriginOf(obj)
-    if not parts then
-        return false
-    end
-
-    local restored = 0
+    local restored, deferred = 0, 0
     for i = 1, #parts do
         local part = parts[i]
         if part and part.n and part.x ~= nil and part.y ~= nil then
-            local sq = LayeredPlacement.ensureGridSquare(
-                originX + part.x, originY + part.y, originZ, true
-            )
-            if sq then
+            local sq = cell:getGridSquare(originX + part.x, originY + part.y, originZ)
+            if not sq then
+                deferred = deferred + 1
+            else
                 LayeredPlacement.markConstruction(sq)
                 local existing = LayeredPlacement.findSpriteObject(sq, part.n)
                 if not existing then
@@ -285,6 +321,143 @@ function LayeredPlacement.restoreMultiGridPartners(obj)
                 end
             end
         end
+    end
+    return restored, deferred
+end
+
+--- Footprints with a partner we could not rebuild because its square had not
+--- streamed in yet. Retried on a later tick instead of forcing the square into
+--- existence -- creating it is what dropped an empty tile over real map data and
+--- took the floor and walls with it. A light that straddles a chunk boundary is
+--- the usual case: its other half arrives a moment later, not never.
+local pendingGridRestores = {}
+local pendingRestoreTicks = 0
+local RESTORE_RETRY_TICKS = 30
+local RESTORE_MAX_ATTEMPTS = 20
+
+local function restoreKey(originX, originY, originZ)
+    return tostring(originX) .. "," .. tostring(originY) .. "," .. tostring(originZ)
+end
+
+--- Stop waiting on a footprint. Pickup calls this through clearMultiGridTags:
+--- without it a queued retry would put back the light the player just took.
+function LayeredPlacement.forgetGridRestore(originX, originY, originZ)
+    pendingGridRestores[restoreKey(originX, originY, originZ)] = nil
+end
+
+local function queueGridRestore(originX, originY, originZ, parts, desiredLightState)
+    local key = restoreKey(originX, originY, originZ)
+    local entry = pendingGridRestores[key]
+    if entry then
+        entry.parts = parts
+        entry.light = desiredLightState
+        return
+    end
+    pendingGridRestores[key] = {
+        ox = originX,
+        oy = originY,
+        oz = originZ,
+        parts = parts,
+        light = desiredLightState,
+        attempts = 0,
+    }
+end
+
+--- Is any part of this footprint still standing on a square we can see?
+--- Returns the number of loaded part squares and how many still hold their part,
+--- so a footprint that was picked up or deleted while queued is dropped rather
+--- than resurrected.
+local function surveyFootprint(entry)
+    local cell = getCell()
+    if not cell then
+        return 0, 0
+    end
+    local seen, alive = 0, 0
+    for i = 1, #entry.parts do
+        local part = entry.parts[i]
+        if part and part.n and part.x ~= nil and part.y ~= nil then
+            local sq = cell:getGridSquare(entry.ox + part.x, entry.oy + part.y, entry.oz)
+            if sq then
+                seen = seen + 1
+                local obj = LayeredPlacement.findSpriteObject(sq, part.n)
+                if obj and LayeredPlacement.sameGridOrigin(obj, entry.ox, entry.oy, entry.oz) then
+                    alive = alive + 1
+                end
+            end
+        end
+    end
+    return seen, alive
+end
+
+local function processPendingGridRestores()
+    if not LayeredPlacement.canMutateWorld() then
+        return
+    end
+    pendingRestoreTicks = pendingRestoreTicks + 1
+    if pendingRestoreTicks < RESTORE_RETRY_TICKS then
+        return
+    end
+    pendingRestoreTicks = 0
+
+    local finished = {}
+    for key, entry in pairs(pendingGridRestores) do
+        entry.attempts = entry.attempts + 1
+        local seen, alive = surveyFootprint(entry)
+        if seen > 0 and alive == 0 then
+            -- Every part we can see is gone: the light was picked up or deleted
+            -- while we waited. Putting it back is the resurrection bug.
+            table.insert(finished, key)
+        else
+            local restored, deferred = restoreGridParts(
+                entry.ox, entry.oy, entry.oz, entry.parts, entry.light
+            )
+            if restored > 0 then
+                LayeredPlacement.log("restored " .. tostring(restored)
+                    .. " deferred multi-grid part(s)")
+            end
+            if deferred == 0 or entry.attempts >= RESTORE_MAX_ATTEMPTS then
+                table.insert(finished, key)
+            end
+        end
+    end
+    for i = 1, #finished do
+        pendingGridRestores[finished[i]] = nil
+    end
+end
+
+--- Rebuild any missing multi-tile partners recorded on this object.
+function LayeredPlacement.restoreMultiGridPartners(obj)
+    if not obj or not LayeredPlacement.canMutateWorld() then
+        return false
+    end
+    local square = obj.getSquare and obj:getSquare()
+    local spr = obj.getSprite and obj:getSprite()
+    if not square or not spr then
+        return false
+    end
+
+    local md = obj.getModData and obj:getModData()
+    local desiredLightState = md and md.lpWantOn
+    if desiredLightState == nil and instanceof(obj, "IsoLightSwitch") and obj.isActivated then
+        desiredLightState = obj:isActivated() and true or false
+    end
+
+    local originX, originY, originZ, parts = LayeredPlacement.gridOriginOf(obj)
+    if not parts then
+        return false
+    end
+
+    -- Loaded squares only. This runs from LoadGridsquare, so a partner sitting
+    -- in a chunk that has not streamed in yet is the normal case, not an error:
+    -- wait for it rather than calling it into existence. Creating the square
+    -- here dropped an empty tile on top of real map data and took the floor,
+    -- walls and furniture with it -- and player-built ones have no second copy
+    -- to reload from, so they were gone for good.
+    local restored, deferred = restoreGridParts(
+        originX, originY, originZ, parts, desiredLightState
+    )
+    if deferred > 0 then
+        queueGridRestore(originX, originY, originZ, parts, desiredLightState)
     end
     if restored > 0 then
         LayeredPlacement.tagMultiGridObject(obj, originX, originY, originZ, parts)
@@ -453,6 +626,10 @@ end
 if Events and Events.OnServerCommand and Events.OnTick then
     Events.OnServerCommand.Add(onServerReply)
     Events.OnTick.Add(watchPendingRequests)
+end
+
+if Events and Events.OnTick then
+    Events.OnTick.Add(processPendingGridRestores)
 end
 
 --- Send one world-action request to the authoritative server. Pure MP clients
@@ -966,6 +1143,15 @@ function LayeredPlacement.ensureGridSquare(x, y, z, force)
     if sq then
         return sq
     end
+    -- The gate has to come before *every* create path. getOrCreateGridSquare
+    -- fabricates just as readily as createNewGridSquare, so running it first
+    -- made `force` mean nothing and let even non-forced callers invent squares
+    -- the engine considers invalid. Vanilla checks isValidSquare before both of
+    -- its own createNewGridSquare calls (ISBuildingObject, ISBuildIsoEntity).
+    local world = getWorld and getWorld() or nil
+    if not force and world and world.isValidSquare and not world:isValidSquare(x, y, z) then
+        return nil
+    end
     if cell.getOrCreateGridSquare then
         local ok, created = pcall(function()
             return cell:getOrCreateGridSquare(x, y, z)
@@ -973,10 +1159,6 @@ function LayeredPlacement.ensureGridSquare(x, y, z, force)
         if ok and created then
             return created
         end
-    end
-    local world = getWorld and getWorld() or nil
-    if not force and world and world.isValidSquare and not world:isValidSquare(x, y, z) then
-        return nil
     end
     local ok, created = pcall(function()
         return cell:createNewGridSquare(x, y, z, true)
