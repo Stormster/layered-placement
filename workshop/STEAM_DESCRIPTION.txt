@@ -6,6 +6,11 @@ Server owners choose allowed features in Sandbox Options. Players can turn allow
 
 B42.20+. Safe mid-save. Multiplayer supported — enable on the server and all clients. Hosting co-op counts as a server, so enable it in the co-op server's mod list too, or stacking on occupied tiles will do nothing.
 
+COMPANION MOD (optional, not required)
+
+Brush Tool Save Fix — https://steamcommunity.com/sharedfiles/filedetails/?id=3775272983
+A separate B42 multiplayer bug: admin Brush Tool tile edits are cosmetic only and revert once the chunk unloads. Layered Placement does not use the Brush Tool and works fine without it, but the two get confused because tiles vanishing looks the same from the outside. If you run a server, use the Brush Tool, and see edits reverting after a relog or restart, that is the one you want.
+
 My mods are literally fueled by my caffeine addiction.
 If I helped you, buying me a coffee would be AMAZING. Thanks guys. https://buymeacoffee.com/stormster10
 

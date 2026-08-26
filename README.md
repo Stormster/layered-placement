@@ -39,6 +39,19 @@ Useful lines to look for: `client requested placeLayered …` (client asked), `s
 
 ---
 
+## Companion mod
+
+Not required, and not a dependency — Layered Placement does not touch the Brush
+Tool and works fine without this. It is listed here because the symptoms look
+alike and the two get confused.
+
+[Brush Tool Save Fix](https://steamcommunity.com/sharedfiles/filedetails/?id=3775272983)
+(`BrushToolSaveFix`) fixes a separate Build 42 multiplayer bug where **admin**
+Brush Tool tile edits are cosmetic only: painted or destroyed tiles look right
+until the chunk unloads, then revert. If you run a server, use the Brush Tool,
+and see tiles reverting after a relog or restart, that is the bug — a different
+one from anything here.
+
 ## Play the mod
 
 Subscribe on Steam — that is the supported way to install and receive updates:
