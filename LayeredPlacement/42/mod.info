@@ -3,5 +3,5 @@ id=LayeredPlacement
 description=Makes Move Furniture Place work more like the admin brush for lights, posters, and other wall/ceiling decor. Put lights over furniture and hang stuff on railings and catwalks. Put furniture under overhead strip lights, like the long fluorescent tubes the game normally blocks. Outdoor and railing lights use battery when there is no building power so they still turn on when placed. Crates, tables and other floor furniture still stack by the normal rules, and skills and tools still matter. Server owners set allowed features in Sandbox Options; players can opt out in Mod Options. Multiplayer supported - enable on server and all clients. B42.20+.
 poster=poster.png
 author=Storm
-modversion=1.6.34
+modversion=1.6.35
 versionMin=42.20

@@ -1,7 +1,7 @@
 LayeredPlacement = LayeredPlacement or {}
 
 LayeredPlacement.MOD_ID = "LayeredPlacement"
-LayeredPlacement.VERSION = "1.6.34"
+LayeredPlacement.VERSION = "1.6.35"
 
 --- Version to show a player. mod.info is what the Mods screen and the Workshop
 --- report, so prefer it and let VERSION answer where that lookup does not exist
@@ -23,18 +23,40 @@ end
 --- CanBeDroppedOnFloor=false, so Drop / drag-to-ground no-ops and only Place
 --- works. Vanilla wall pickups hit the same flag; floating pickup puts those
 --- items in inventory more often, so mark them droppable after we create them.
-function LayeredPlacement.makeMoveableDroppable(item)
-    if not item or not instanceof(item, "Moveable") then
+
+--- 42.20.4 gates the getNumClassFields/getClassField reflection helpers behind
+--- debug. Outside debug they throw, and the game still prints the Lua stack to
+--- the error report even though pcall swallows the failure, so one pickup spams
+--- a player who is not in debug. Only reach for reflection when debug is
+--- actually on, and latch it off once it genuinely fails.
+local reflectionDroppable = true
+local nativeDroppable = true
+
+--- Preferred path: a build that exposes the setter needs no reflection and so
+--- works for players who are not in debug.
+local function setDroppableNatively(item)
+    if not nativeDroppable or not item.setCanBeDroppedOnFloor then
         return false
     end
-    if item:CanBeDroppedOnFloor() then
-        return true
+    local ok = pcall(function()
+        item:setCanBeDroppedOnFloor(true)
+    end)
+    if not ok then
+        nativeDroppable = false
     end
-    -- Only multi-sprite ForceSingleItem items use spriteGrid + that flag.
-    if not item:getSpriteGrid() then
+    return ok
+end
+
+local function setDroppableViaReflection(item)
+    if not reflectionDroppable then
+        return false
+    end
+    -- Re-checked every call so toggling debug on mid-session still works.
+    if not getDebug or not getDebug() then
         return false
     end
     if not getNumClassFields or not getClassField then
+        reflectionDroppable = false
         return false
     end
     local ok = pcall(function()
@@ -48,7 +70,28 @@ function LayeredPlacement.makeMoveableDroppable(item)
             end
         end
     end)
-    return ok and item:CanBeDroppedOnFloor()
+    if not ok then
+        reflectionDroppable = false
+    end
+    return ok
+end
+
+function LayeredPlacement.makeMoveableDroppable(item)
+    if not item or not instanceof(item, "Moveable") then
+        return false
+    end
+    if item:CanBeDroppedOnFloor() then
+        return true
+    end
+    -- Only multi-sprite ForceSingleItem items use spriteGrid + that flag.
+    if not item:getSpriteGrid() then
+        return false
+    end
+    if setDroppableNatively(item) and item:CanBeDroppedOnFloor() then
+        return true
+    end
+    setDroppableViaReflection(item)
+    return item:CanBeDroppedOnFloor()
 end
 
 --- Fix ForceSingleItem moveables already sitting in an inventory.
